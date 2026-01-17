@@ -104,19 +104,17 @@ def main():
             
         except Exception as e:
             error_count += 1
-            if error_count <= 5:  # 처음 5개 에러만 출력
+            if error_count <= 5:
                 print(f"⚠️ {name} ({code}) 에러: {e}")
             continue
     
     print(f"\n📊 스캔 완료: 총 {scanned_count}개 검토, {len(results)}개 조건 충족, {error_count}개 에러")
     
-    # 결과 저장 (빈 결과라도 헤더는 포함)
     scan_day = datetime.now().strftime("%Y-%m-%d")
     os.makedirs("data/partial", exist_ok=True)
     output_file = f"data/partial/scanner_output_{scan_day}_chunk{chunk}.csv"
     
     if not results:
-        # 빈 결과라도 컬럼 구조는 유지
         print("⚠️ 조건에 맞는 종목이 없습니다. 빈 파일(헤더만) 생성합니다.")
         empty_df = pd.DataFrame(columns=[
             "rank", "code", "name", "market", "close", "total_score", 
