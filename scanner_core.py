@@ -131,7 +131,8 @@ def score_stock(df, sig, cfg, mktcap=None):
 
     adv20 = float((df["Close"] * df["Volume"]).rolling(20).mean().loc[last])
     
-    if adv20 < 5_000_000_000:
+    min_adv = cfg.get("universe", {}).get("min_adv20_value", 5_000_000_000)
+    if adv20 < min_adv:
         return None
     
     if mktcap and mktcap > 0:
@@ -156,8 +157,10 @@ def score_stock(df, sig, cfg, mktcap=None):
 
     if stop <= 0:
         return None
+    
     risk = (close - stop) / close
-    if risk <= 0 or risk > cfg["risk"]["hard_stop_pct"]:
+    
+    if risk <= 0 or risk > 0.15:
         return None
 
     total = float(trend_score + trigger_score + liq_score)
@@ -174,4 +177,10 @@ def score_stock(df, sig, cfg, mktcap=None):
         "bbw_pct": float(sig["bbw_pct"].loc[last]),
         "adx": adx_val,
         "setup": setup,
+        "ma20": mas[20],
+        "ma60": mas[50],
+        "vol_score": trigger_score,
+        "momentum_score": 0,
+        "news_score": 0,
+        "news_summary": "",
     }
