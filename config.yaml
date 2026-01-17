@@ -1,0 +1,32 @@
+universe:
+  min_mktcap_krw: 200000000000   # 2,000억
+  min_close: 10000               # 주가 1만원 이상
+  min_adv20_value: 10000000000   # 100억 (안전장치)
+  top_n_stocks: 1000             # 시총 상위 1000
+  chunk_size: 500                # 500개씩 2번
+
+bollinger:
+  length: 60
+  stdev: 2.0
+  bandwidth_lookback: 120
+  squeeze_percentile_max: 30
+  expansion_percentile_min: 80
+
+volume:
+  climax_mult: 5.0
+  vol_confirm_mult: 1.5
+
+trend:
+  adx_len: 14
+  adx_min: 20
+  ma_periods: [20, 50, 200]
+
+risk:
+  hard_stop_pct: 0.08
+  max_initial_risk_pct: 0.08
+
+news:
+  lookback_days: 7
+  max_keywords: 8
+  naver_client_id: ""
+  naver_client_secret: ""
