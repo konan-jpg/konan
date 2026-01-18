@@ -171,7 +171,7 @@ if selected_code:
         st.markdown("---")
         st.subheader(f"📊 {row['name']} ({row['code']}) 상세 분석")
         
-        # 메트릭
+        # 메트릭 (4열 → 모바일에서 자동 조정)
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("현재가", f"{row['close']:,.0f}원")
@@ -194,70 +194,75 @@ if selected_code:
                 else:
                     st.write(f"**Setup {stype}**: {desc}")
         
-        # 점수 상세 설명
         st.markdown("---")
-        col_left, col_right = st.columns(2)
         
-        with col_left:
-            st.markdown("#### 📈 점수 구성 상세")
-            
-            score_info = get_score_explanations()
-            
-            # 추세 점수
-            trend_score = row.get('trend_score', 0)
-            with st.expander(f"🔹 추세 점수: {trend_score:.0f}점 (터치하여 설명 보기)", expanded=False):
-                st.markdown(f"**{score_info['trend_score']['description']}**")
-                st.markdown("**구성 요소:**")
-                for comp in score_info['trend_score']['components']:
-                    st.write(f"• {comp}")
-                st.markdown("---")
-                st.markdown("**현재 종목 분석:**")
-                if row.get('close', 0) > row.get('ma20', 0):
-                    st.write("✅ 현재가 > MA20 (+10)")
-                if row.get('close', 0) > row.get('ma60', 0):
-                    st.write("✅ 현재가 > MA60 (+10)")
-                adx = row.get('adx', 0)
-                if adx >= 40:
-                    st.write(f"✅ ADX {adx:.0f} 강세 (+15)")
-                elif adx >= 30:
-                    st.write(f"✅ ADX {adx:.0f} 중강 (+12)")
-                elif adx >= 25:
-                    st.write(f"✅ ADX {adx:.0f} 중립 (+8)")
-                elif adx >= 20:
-                    st.write(f"✅ ADX {adx:.0f} 약세 (+5)")
-            
-            # 트리거 점수
-            trigger_score = row.get('trigger_score', 0)
-            with st.expander(f"🔹 트리거 점수: {trigger_score:.0f}점 (터치하여 설명 보기)", expanded=False):
-                st.markdown(f"**{score_info['trigger_score']['description']}**")
-                st.markdown("**구성 요소:**")
-                for comp in score_info['trigger_score']['components']:
-                    st.write(f"• {comp}")
-                st.markdown("---")
-                st.markdown("**현재 종목 분석:**")
-                st.write(f"✅ Setup {row.get('setup', '-')} 발동")
-            
-            # 유동성 점수
-            liq_score = row.get('liq_score', 0)
-            with st.expander(f"🔹 유동성 점수: {liq_score:.0f}점 (터치하여 설명 보기)", expanded=False):
-                st.markdown(f"**{score_info['liq_score']['description']}**")
-                st.markdown("**구성 요소:**")
-                for comp in score_info['liq_score']['components']:
-                    st.write(f"• {comp}")
-                st.markdown("---")
-                st.markdown("**의미:**")
-                st.write("유동성이 높을수록 매매가 용이하고, 슬리피지(체결 가격 차이)가 적습니다.")
+        # 점수 구성 상세 (세로 배치 - 모바일 최적화)
+        st.markdown("#### 📈 점수 구성 상세")
         
-        with col_right:
-            st.markdown("#### 📊 기술적 지표")
+        score_info = get_score_explanations()
+        
+        # 추세 점수
+        trend_score = row.get('trend_score', 0)
+        with st.expander(f"🔹 추세 점수: {trend_score:.0f}점", expanded=False):
+            st.markdown(f"**{score_info['trend_score']['description']}**")
+            st.markdown("**구성 요소:**")
+            for comp in score_info['trend_score']['components']:
+                st.write(f"• {comp}")
+            st.markdown("---")
+            st.markdown("**현재 종목 분석:**")
+            if row.get('close', 0) > row.get('ma20', 0):
+                st.write("✅ 현재가 > MA20 (+10)")
+            if row.get('close', 0) > row.get('ma60', 0):
+                st.write("✅ 현재가 > MA60 (+10)")
+            adx = row.get('adx', 0)
+            if adx >= 40:
+                st.write(f"✅ ADX {adx:.0f} 강세 (+15)")
+            elif adx >= 30:
+                st.write(f"✅ ADX {adx:.0f} 중강 (+12)")
+            elif adx >= 25:
+                st.write(f"✅ ADX {adx:.0f} 중립 (+8)")
+            elif adx >= 20:
+                st.write(f"✅ ADX {adx:.0f} 약세 (+5)")
+        
+        # 트리거 점수
+        trigger_score = row.get('trigger_score', 0)
+        with st.expander(f"🔹 트리거 점수: {trigger_score:.0f}점", expanded=False):
+            st.markdown(f"**{score_info['trigger_score']['description']}**")
+            st.markdown("**구성 요소:**")
+            for comp in score_info['trigger_score']['components']:
+                st.write(f"• {comp}")
+            st.markdown("---")
+            st.markdown("**현재 종목 분석:**")
+            st.write(f"✅ Setup {row.get('setup', '-')} 발동")
+        
+        # 유동성 점수
+        liq_score = row.get('liq_score', 0)
+        with st.expander(f"🔹 유동성 점수: {liq_score:.0f}점", expanded=False):
+            st.markdown(f"**{score_info['liq_score']['description']}**")
+            st.markdown("**구성 요소:**")
+            for comp in score_info['liq_score']['components']:
+                st.write(f"• {comp}")
+            st.markdown("---")
+            st.markdown("**의미:**")
+            st.write("유동성이 높을수록 매매가 용이하고, 슬리피지(체결 가격 차이)가 적습니다.")
+        
+        # 기술적 지표 (차트 위에 배치 - 모바일 최적화)
+        st.markdown("---")
+        st.markdown("#### 📊 기술적 지표")
+        
+        # 지표를 가로로 컴팩트하게 표시
+        indicator_cols = st.columns(3)
+        with indicator_cols[0]:
             if 'ma20' in row and pd.notna(row['ma20']):
-                st.write(f"**20일 이평선**: {row['ma20']:,.0f}원")
+                st.write(f"**20일선**: {row['ma20']:,.0f}원")
             if 'ma60' in row and pd.notna(row['ma60']):
-                st.write(f"**60일 이평선**: {row['ma60']:,.0f}원")
+                st.write(f"**60일선**: {row['ma60']:,.0f}원")
+        with indicator_cols[1]:
             if 'adx' in row and pd.notna(row['adx']):
-                st.write(f"**ADX**: {row['adx']:.1f} (추세 강도)")
+                st.write(f"**ADX**: {row['adx']:.1f}")
             if 'bbw_pct' in row and pd.notna(row['bbw_pct']):
-                st.write(f"**밴드폭 백분위**: {row['bbw_pct']:.0f}%")
+                st.write(f"**밴드폭%**: {row['bbw_pct']:.0f}%")
+        with indicator_cols[2]:
             if 'stop' in row and pd.notna(row['stop']):
                 st.write(f"**손절가**: {row['stop']:,.0f}원")
         
@@ -295,12 +300,12 @@ if selected_code:
                 avg_body = body.rolling(20).mean()
                 chart_df['Big_Candle'] = body > avg_body * 1.5
                 
-                # Subplot 생성 (가격 + 거래량)
+                # Subplot 생성 (가격 + 거래량) - 거래량 타이틀 제거
                 fig = make_subplots(
                     rows=2, cols=1,
-                    row_heights=[0.7, 0.3],
-                    vertical_spacing=0.05,
-                    subplot_titles=(f"{row['name']} ({row['code']})", "거래량")
+                    row_heights=[0.75, 0.25],
+                    vertical_spacing=0.03,
+                    subplot_titles=(f"{row['name']} ({row['code']})", "")
                 )
                 
                 # 캔들스틱 색상: 상승=빨간색, 하락=파란색
@@ -350,15 +355,16 @@ if selected_code:
                         row=1, col=1
                     )
                 
-                # 주요 이벤트 표시
-                for idx in chart_df.index[-60:]:  # 최근 60일만
+                # 주요 이벤트 표시 (모바일에서 너무 많으면 복잡하므로 최근 30일만)
+                for idx in chart_df.index[-30:]:
                     if chart_df.loc[idx, 'Vol_Spike'] and chart_df.loc[idx, 'Big_Candle']:
                         candle_type = "양봉" if chart_df.loc[idx, 'Close'] > chart_df.loc[idx, 'Open'] else "음봉"
                         fig.add_annotation(
                             x=idx, y=chart_df.loc[idx, 'High'],
-                            text=f"장대{candle_type}+거래량",
+                            text=f"장대{candle_type}",
                             showarrow=True, arrowhead=2,
                             arrowcolor="red" if candle_type == "양봉" else "blue",
+                            font=dict(size=10),
                             row=1, col=1
                         )
                 
@@ -368,21 +374,32 @@ if selected_code:
                 
                 fig.add_trace(
                     go.Bar(x=chart_df.index, y=chart_df['Volume'],
-                          name='거래량', marker_color=colors),
+                          name='거래량', marker_color=colors, showlegend=False),
                     row=2, col=1
                 )
                 
-                # 레이아웃
+                # 레이아웃 (모바일 최적화)
                 fig.update_layout(
-                    height=700,
+                    height=600,
                     xaxis_rangeslider_visible=False,
                     hovermode='x unified',
-                    showlegend=True
+                    showlegend=True,
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=11)
+                    ),
+                    margin=dict(l=10, r=10, t=50, b=10)
                 )
                 
-                fig.update_xaxes(title_text="날짜", row=2, col=1)
-                fig.update_yaxes(title_text="가격 (원)", row=1, col=1)
-                fig.update_yaxes(title_text="거래량", row=2, col=1)
+                # x축 날짜만 표시 (거래량 밑에만)
+                fig.update_xaxes(showticklabels=False, row=1, col=1)
+                fig.update_xaxes(showticklabels=True, row=2, col=1)
+                fig.update_yaxes(title_text="", row=1, col=1)
+                fig.update_yaxes(title_text="", row=2, col=1)
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
