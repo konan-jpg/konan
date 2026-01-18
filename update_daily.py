@@ -255,17 +255,20 @@ def main():
     chunk_size = int(cfg["universe"]["chunk_size"])
     chunk = int(os.environ.get("SCAN_CHUNK", "1"))
     
-    stocks = stocks.head(top_n)
+    # 전체 상위 종목 저장 (섹터 분석용)
+    all_top_stocks = stocks.head(top_n).copy()
+    
+    # 청크 분할
     start_i = (chunk - 1) * chunk_size
     end_i = chunk * chunk_size
-    stocks = stocks.iloc[start_i:end_i]
+    chunk_stocks = all_top_stocks.iloc[start_i:end_i]
     
-    print(f"[SCAN] Chunk {chunk}: {len(stocks)}개 종목 스캔 시작 (인덱스 {start_i}~{end_i})")
+    print(f"[SCAN] Chunk {chunk}: {len(chunk_stocks)}개 종목 스캔 시작 (인덱스 {start_i}~{end_i})")
     
     # === 0단계: 주도 섹터 분석 (독립 검증용) ===
-    # 첫 번째 청크 실행 시에만 수행 (중복 방지)
+    # 첫 번째 청크 실행 시에만 수행 (전체 종목 대상)
     if chunk == 1:
-        calculate_sector_rankings(stocks)
+        calculate_sector_rankings(all_top_stocks)
 
     # === 1단계: 기술적 스캔 ===
     print("\n[STEP1] 기술적 스캔 시작...")
@@ -276,7 +279,7 @@ def main():
     scanned_count = 0
     error_count = 0
     
-    for idx, row in enumerate(stocks.itertuples(index=False), start=1):
+    for idx, row in enumerate(chunk_stocks.itertuples(index=False), start=1):
         code = getattr(row, "Code", None)
         name = getattr(row, "Name", None)
         market = getattr(row, "Market", "")
@@ -288,7 +291,7 @@ def main():
         
         scanned_count += 1
         if scanned_count % 10 == 0:
-            print(f"진행중: {scanned_count}/{len(stocks)} ({name})")
+            print(f"진행중: {scanned_count}/{len(chunk_stocks)} ({name})")
         
         try:
             df = fdr.DataReader(code, start, end)
@@ -418,3 +421,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
