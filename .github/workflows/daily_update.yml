@@ -70,6 +70,15 @@ jobs:
           pattern: partial-chunk-*
           merge-multiple: true
       
+      - name: Move sector rankings to correct location
+        run: |
+          if [ -f data/partial/sector_rankings.csv ]; then
+            mv data/partial/sector_rankings.csv data/sector_rankings.csv
+            echo "✅ Moved sector_rankings.csv to data/"
+          else
+            echo "⚠️ sector_rankings.csv not found in artifacts"
+          fi
+      
       - name: Merge chunks
         run: python merge_chunks.py
       
