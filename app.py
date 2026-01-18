@@ -122,6 +122,7 @@ filtered_df = df[df['total_score'] >= min_score].copy()
 
 # 표 표시
 st.subheader(f"🏆 상위 랭킹 종목 ({len(filtered_df)}개)")
+st.caption("👆 테이블에서 행을 클릭하면 상세 분석이 표시됩니다")
 
 # 표시할 컬럼에 셋업 추가
 display_cols = ['code', 'name', 'close', 'total_score', 'setup', 'trend_score', 'trigger_score', 'liq_score']
@@ -144,30 +145,21 @@ rename_map = {
 }
 display_df = display_df.rename(columns=rename_map)
 
-# 표 표시
-st.dataframe(
+# 테이블 클릭으로 종목 선택 (Streamlit 1.35+)
+event = st.dataframe(
     display_df,
     use_container_width=True,
     height=400,
-    hide_index=True
+    hide_index=True,
+    on_select="rerun",
+    selection_mode="single-row"
 )
 
-# 종목 선택 (라디오 버튼 - 테이블 클릭 대체)
-if len(filtered_df) > 0:
-    stock_list = [f"{i+1}. {row['name']} ({row['code']})" for i, row in filtered_df.head(20).iterrows()]
-    
-    st.markdown("#### 📌 종목 선택 (클릭하여 상세 분석)")
-    selected_stock = st.radio(
-        "종목 선택",
-        options=stock_list,
-        label_visibility="collapsed",
-        horizontal=False
-    )
-    
-    # 선택된 종목에서 코드 추출
-    selected_code = selected_stock.split("(")[-1].replace(")", "").strip()
-else:
-    selected_code = None
+# 선택된 행 처리
+selected_code = None
+if event.selection and len(event.selection.rows) > 0:
+    selected_idx = event.selection.rows[0]
+    selected_code = filtered_df.iloc[selected_idx]['code']
 
 # 종목 상세 분석
 if selected_code:
@@ -401,7 +393,7 @@ if selected_code:
             st.error(f"차트 생성 중 에러: {e}")
 
 else:
-    st.info("👆 위에서 종목을 선택하면 상세 분석이 표시됩니다.")
+    st.info("👆 테이블에서 종목 행을 클릭하면 상세 분석이 표시됩니다.")
 
 st.markdown("---")
 st.caption(f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {filename}")
