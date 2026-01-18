@@ -283,24 +283,63 @@ if selected_code:
         else:
             st.info(f"📌 **업종**: {stock_sector}")
         
-        # 메트릭 (5열)
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric("현재가", f"{row['close']:,.0f}원")
-        with col2:
-            st.metric("총점", f"{row['total_score']:.0f}점")
-        with col3:
-            setup_type = row.get('setup', '-')
-            st.metric("셋업", setup_type)
-        with col4:
-            if 'risk_pct' in row and pd.notna(row['risk_pct']):
-                st.metric("리스크", f"{row['risk_pct']:.1f}%")
-        with col5:
-            foreign = row.get('foreign_consec_buy', 0)
-            if pd.notna(foreign) and foreign > 0:
-                st.metric("외국인 연속매수", f"{int(foreign)}일")
+        # 모바일 친화적 정보 요약 (CSS Grid 사용)
+        foreign = row.get('foreign_consec_buy', 0)
+        inst_net = row.get('inst_net_5d', 0)
+        risk_pct = row.get('risk_pct', 0)
+        
+        st.markdown(f"""
+        <style>
+        .info-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 5px;
+            margin-bottom: 10px;
+        }}
+        .info-box {{
+            background-color: #f0f2f6;
+            padding: 8px;
+            border-radius: 5px;
+            text-align: center;
+        }}
+        .info-label {{ font-size: 11px; color: #666; }}
+        .info-value {{ font-size: 14px; font-weight: bold; margin-top: 2px; }}
+        @media (max-width: 600px) {{
+            .info-grid {{ grid-template-columns: repeat(3, 1fr); }}
+            .info-value {{ font-size: 13px; }}
+        }}
+        </style>
+        
+        <div class="info-grid">
+            <div class="info-box">
+                <div class="info-label">현재가</div>
+                <div class="info-value">{row['close']:,.0f}원</div>
+            </div>
+            <div class="info-box">
+                <div class="info-label">총점</div>
+                <div class="info-value">{row['total_score']:.0f}점</div>
+            </div>
+            <div class="info-box">
+                <div class="info-label">셋업</div>
+                <div class="info-value">{row.get('setup', '-')}</div>
+            </div>
+            <div class="info-box">
+                <div class="info-label">리스크</div>
+                <div class="info-value">{risk_pct:.1f}%</div>
+            </div>
+            <div class="info-box">
+                <div class="info-label">외인연속</div>
+                <div class="info-value">{int(foreign)}일</div>
+            </div>
+            <div class="info-box">
+                <div class="info-label">기관5일</div>
+                <div class="info-value">{inst_net/1e8:,.0f}억</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
         # 셋업 설명
+        setup_type = row.get('setup', '-')
         with st.expander(f"ℹ️ 셋업 설명 (현재: Setup {setup_type})", expanded=False):
             setup_explanations = get_setup_explanations()
             for stype, desc in setup_explanations.items():
@@ -663,3 +702,4 @@ else:
 
 st.markdown("---")
 st.caption(f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {filename}")
+
