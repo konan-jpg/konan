@@ -21,27 +21,72 @@ def get_stock_list(cfg):
             stocks = stocks[stocks["Marcap"] >= cfg["universe"]["min_mktcap_krw"]]
             stocks = stocks.sort_values("Marcap", ascending=False)
         
-        # Sector 정보가 없으면 KRX에서 직접 가져오기
+        # Sector 정보가 없으면 여러 방법으로 가져오기 시도
         if "Sector" not in stocks.columns or stocks["Sector"].isna().all():
+            sector_loaded = False
+            
+            # 방법 1: KRX API 직접 호출
             try:
                 print("[INFO] KRX에서 섹터 정보 가져오는 중...")
-                krx_url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
-                krx_df = pd.read_html(krx_url, encoding='euc-kr')[0]
-                krx_df = krx_df[["종목코드", "업종"]]
-                krx_df.columns = ["Code", "Sector"]
-                krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
+                import requests
                 
-                # 기존 stocks에 Sector 컬럼 있으면 제거
-                if "Sector" in stocks.columns:
-                    stocks = stocks.drop(columns=["Sector"])
+                # KRX 상장법인 목록 API
+                krx_url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                }
+                data = {
+                    'bld': 'dbms/MDC/STAT/standard/MDCSTAT01901',
+                    'mktId': 'ALL',
+                    'share': '1',
+                    'csvxls_is498': 'false'
+                }
                 
-                stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
-                stocks = stocks.merge(krx_df, on="Code", how="left")
-                stocks["Sector"] = stocks["Sector"].fillna("기타")
-                print(f"[OK] 섹터 정보 로드 완료: {stocks['Sector'].nunique()}개 업종")
+                r = requests.post(krx_url, headers=headers, data=data, timeout=15)
+                if r.status_code == 200:
+                    krx_data = r.json()
+                    if 'OutBlock_1' in krx_data:
+                        krx_list = krx_data['OutBlock_1']
+                        krx_df = pd.DataFrame(krx_list)
+                        if 'ISU_SRT_CD' in krx_df.columns and 'IDX_IND_NM' in krx_df.columns:
+                            krx_df = krx_df[['ISU_SRT_CD', 'IDX_IND_NM']]
+                            krx_df.columns = ['Code', 'Sector']
+                            krx_df['Code'] = krx_df['Code'].astype(str).str.zfill(6)
+                            
+                            if "Sector" in stocks.columns:
+                                stocks = stocks.drop(columns=["Sector"])
+                            stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
+                            stocks = stocks.merge(krx_df, on="Code", how="left")
+                            stocks["Sector"] = stocks["Sector"].fillna("기타")
+                            sector_loaded = True
+                            print(f"[OK] KRX API 섹터 로드: {stocks['Sector'].nunique()}개 업종")
             except Exception as e:
-                print(f"[WARN] KRX 섹터 정보 로드 실패: {e}")
+                print(f"[WARN] KRX API 실패: {e}")
+            
+            # 방법 2: HTML 다운로드 (fallback)
+            if not sector_loaded:
+                try:
+                    krx_url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
+                    krx_df = pd.read_html(krx_url, encoding='euc-kr')[0]
+                    krx_df = krx_df[["종목코드", "업종"]]
+                    krx_df.columns = ["Code", "Sector"]
+                    krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
+                    
+                    if "Sector" in stocks.columns:
+                        stocks = stocks.drop(columns=["Sector"])
+                    stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
+                    stocks = stocks.merge(krx_df, on="Code", how="left")
+                    stocks["Sector"] = stocks["Sector"].fillna("기타")
+                    sector_loaded = True
+                    print(f"[OK] KRX HTML 섹터 로드: {stocks['Sector'].nunique()}개 업종")
+                except Exception as e:
+                    print(f"[WARN] KRX HTML 실패: {e}")
+            
+            # 실패 시 기본값
+            if not sector_loaded:
                 stocks["Sector"] = "기타"
+                print("[WARN] 섹터 정보를 가져올 수 없어 '기타'로 설정")
         
         # Sector가 여전히 없으면 기본값
         if "Sector" not in stocks.columns:
