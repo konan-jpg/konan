@@ -415,6 +415,8 @@ if selected_code:
         st.markdown("#### 🎯 매수 전략 추천")
         
         try:
+            import textwrap
+            
             current_price = row['close']
             ma20 = row.get('ma20', current_price)
             ma60 = row.get('ma60', current_price)
@@ -480,40 +482,60 @@ if selected_code:
             except:
                 pass
             
-            # 현재 상태 진단
+            # ==============================
+            # 🥇 추천 우선순위 결정 로직
+            # ==============================
+            best_strategy = "관망"
+            priority_reason = ""
+            
             price_vs_ma20 = (current_price - ma20) / ma20 * 100 if ma20 > 0 else 0
             
-            if price_vs_ma20 <= 3:
-                status_msg = "🟢 현재 **눌림목 구간**입니다. 분할 매수 유효."
-            elif price_vs_ma20 > 8:
-                status_msg = "🟡 현재 **고점 구간**입니다. 돌파 확인 후 진입 추천."
+            # 1순위: 오닐 패턴 (가장 강력하고 희소함)
+            if oneil_price > 0:
+                best_strategy = "💎 오닐/미너비니"
+                priority_reason = f"패턴({oneil_setup_name}) 발생"
+            # 2순위: 눌림목 (리스크가 적음, MA20 근접)
+            elif -2 <= price_vs_ma20 <= 4:
+                best_strategy = "📉 눌림목"
+                priority_reason = "MA20 지지선 근접 (저위험)"
+            # 3순위: 돌파 (추세가 강함)
+            elif current_price >= bb_upper * 0.98:
+                best_strategy = "🚀 추세 돌파"
+                priority_reason = "볼린저밴드 상단 돌파 임박/진행"
             else:
-                status_msg = "🟠 **중립 구간**입니다. 방향성 관찰 필요."
+                best_strategy = "중립/관망"
+                priority_reason = "명확한 진입 시그널 없음"
 
-            st.info(status_msg)
+            # 우선순위 표시
+            if best_strategy != "중립/관망":
+                st.success(f"🏆 **추천 1순위**: {best_strategy} ({priority_reason})")
+            else:
+                st.info(f"👀 현재 상태: {best_strategy} ({priority_reason})")
             
-            # 3-Track UI
+            # 3-Track UI (HTML 렌더링 수정: textwrap.dedent 사용)
             col_sc1, col_sc2, col_sc3 = st.columns(3)
             
             with col_sc1:
-                st.markdown(f"""
+                html_1 = f"""
                 <div style="background-color:rgba(0,255,0,0.1); padding:10px; border-radius:10px; height:100%;">
                     <strong>📉 눌림목</strong><br>
                     진입: <strong>{pullback_price:,.0f}원</strong><br>
                     손절: {pullback_stop:,.0f}원<br>
                     <span style="font-size:0.8em; color:#666;">리스크: {risk_pullback:.1f}%</span>
                 </div>
-                """, unsafe_allow_html=True)
+                """
+                st.markdown(textwrap.dedent(html_1), unsafe_allow_html=True)
                 
             with col_sc2:
-                st.markdown(f"""
+                html_2 = f"""
                 <div style="background-color:rgba(255,165,0,0.1); padding:10px; border-radius:10px; height:100%;">
                     <strong>🚀 추세 돌파</strong><br>
                     진입: <strong>{breakout_price:,.0f}원</strong><br>
                     손절: {breakout_stop:,.0f}원<br>
                     <span style="font-size:0.8em; color:#666;">리스크: {risk_breakout:.1f}%</span>
                 </div>
-                """, unsafe_allow_html=True)
+                """
+                st.markdown(textwrap.dedent(html_2), unsafe_allow_html=True)
                 
             with col_sc3:
                 bg_color = "rgba(138,43,226,0.1)" if oneil_price > 0 else "rgba(128,128,128,0.1)"
@@ -529,13 +551,15 @@ if selected_code:
                     <span style="font-size:0.8em;">패턴이 나타나면 추천됩니다</span>
                     """
                 
-                st.markdown(f"""
+                # HTML 렌더링 문제 해결을 위해 dedent 적용
+                html_3 = f"""
                 <div style="background-color:{bg_color}; padding:10px; border-radius:10px; height:100%;">
                     <strong>💎 오닐/미너비니</strong><br>
                     <span style="font-size:0.8em; color:#999;">({oneil_setup_name})</span><br>
                     {content}
                 </div>
-                """, unsafe_allow_html=True)
+                """
+                st.markdown(textwrap.dedent(html_3), unsafe_allow_html=True)
 
             st.caption(f"⚠️ 기본 손절가: {base_stop:,.0f}원 | 전략별 손절가는 진입가 기준으로 동적 계산됩니다.")
         except Exception as e:
