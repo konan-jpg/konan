@@ -1,4 +1,3 @@
-
 import logging
 
 def analyze_chart_image(image):
