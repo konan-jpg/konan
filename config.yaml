@@ -38,6 +38,9 @@ scoring:
   volume_weight: 20      # 거래량 점수 (돌파 시 거래량, 건조)
   supply_weight: 15      # 수급 점수 (외국인/기관)
   risk_weight: 10        # 리스크 점수 (손절거리 패널티)
+  rs_weight:
+    rs3m_weight: 5   # max points when 3개월 RS >= 80
+    rs6m_weight: 5   # max points when 6개월 RS >= 80
 
 # 수급 데이터 설정
 investor:
