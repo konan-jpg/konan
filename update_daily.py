@@ -25,48 +25,39 @@ def get_stock_list(cfg):
         if "Sector" not in stocks.columns or stocks["Sector"].isna().all():
             sector_loaded = False
             
-            # 방법 1: KRX API 직접 호출
+            # 방법 1: pykrx 라이브러리 사용 (가장 안정적)
             try:
-                print("[INFO] KRX에서 섹터 정보 가져오는 중...")
-                import requests
+                print("[INFO] pykrx에서 섹터 정보 가져오는 중...")
+                from pykrx import stock as pykrx_stock
                 
-                # KRX 상장법인 목록 API
-                krx_url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-                headers = {
-                    'User-Agent': 'Mozilla/5.0',
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                }
-                data = {
-                    'bld': 'dbms/MDC/STAT/standard/MDCSTAT01901',
-                    'mktId': 'ALL',
-                    'share': '1',
-                    'csvxls_is498': 'false'
-                }
+                # 오늘 또는 최근 영업일 기준
+                today_str = datetime.now().strftime("%Y%m%d")
                 
-                r = requests.post(krx_url, headers=headers, data=data, timeout=15)
-                if r.status_code == 200:
-                    krx_data = r.json()
-                    if 'OutBlock_1' in krx_data:
-                        krx_list = krx_data['OutBlock_1']
-                        krx_df = pd.DataFrame(krx_list)
-                        if 'ISU_SRT_CD' in krx_df.columns and 'IDX_IND_NM' in krx_df.columns:
-                            krx_df = krx_df[['ISU_SRT_CD', 'IDX_IND_NM']]
-                            krx_df.columns = ['Code', 'Sector']
-                            krx_df['Code'] = krx_df['Code'].astype(str).str.zfill(6)
-                            
-                            if "Sector" in stocks.columns:
-                                stocks = stocks.drop(columns=["Sector"])
-                            stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
-                            stocks = stocks.merge(krx_df, on="Code", how="left")
-                            stocks["Sector"] = stocks["Sector"].fillna("기타")
-                            sector_loaded = True
-                            print(f"[OK] KRX API 섹터 로드: {stocks['Sector'].nunique()}개 업종")
+                sector_dict = {}
+                # KOSPI 섹터
+                try:
+                    kospi_sectors = pykrx_stock.get_index_ticker_list(today_str, market="KOSPI")
+                    for ticker in stocks[stocks["Market"] == "KOSPI"]["Code"].tolist()[:100]:  # 샘플
+                        try:
+                            info = pykrx_stock.get_market_sector_classifications(today_str, "KOSPI")
+                            if ticker in info.index:
+                                sector_dict[ticker] = info.loc[ticker, "업종명"] if "업종명" in info.columns else "기타"
+                        except:
+                            pass
+                except:
+                    pass
+                
+                if sector_dict:
+                    stocks["Sector"] = stocks["Code"].map(sector_dict).fillna("기타")
+                    sector_loaded = True
+                    print(f"[OK] pykrx 섹터 로드: {stocks['Sector'].nunique()}개 업종")
             except Exception as e:
-                print(f"[WARN] KRX API 실패: {e}")
+                print(f"[WARN] pykrx 실패: {e}")
             
-            # 방법 2: HTML 다운로드 (fallback)
+            # 방법 2: KIND HTML 크롤링 (안정적)
             if not sector_loaded:
                 try:
+                    print("[INFO] KIND에서 섹터 정보 가져오는 중...")
                     krx_url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
                     krx_df = pd.read_html(krx_url, encoding='euc-kr')[0]
                     krx_df = krx_df[["종목코드", "업종"]]
@@ -79,9 +70,37 @@ def get_stock_list(cfg):
                     stocks = stocks.merge(krx_df, on="Code", how="left")
                     stocks["Sector"] = stocks["Sector"].fillna("기타")
                     sector_loaded = True
-                    print(f"[OK] KRX HTML 섹터 로드: {stocks['Sector'].nunique()}개 업종")
+                    print(f"[OK] KIND HTML 섹터 로드: {stocks['Sector'].nunique()}개 업종")
                 except Exception as e:
-                    print(f"[WARN] KRX HTML 실패: {e}")
+                    print(f"[WARN] KIND HTML 실패: {e}")
+            
+            # 방법 3: 네이버 금융 API (추가 백업)
+            if not sector_loaded:
+                try:
+                    print("[INFO] 네이버 금융에서 섹터 정보 가져오는 중...")
+                    import requests
+                    
+                    sector_map = {}
+                    sample_codes = stocks["Code"].head(50).tolist()
+                    
+                    for code in sample_codes:
+                        try:
+                            url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+                            r = requests.get(url, timeout=3)
+                            if r.status_code == 200:
+                                data = r.json()
+                                sector = data.get("industryCodeName", "기타")
+                                sector_map[code] = sector
+                            time.sleep(0.1)  # Rate limit
+                        except:
+                            continue
+                    
+                    if sector_map:
+                        stocks["Sector"] = stocks["Code"].map(sector_map).fillna("기타")
+                        sector_loaded = True
+                        print(f"[OK] 네이버 API 섹터 로드: {len(sector_map)}개 종목")
+                except Exception as e:
+                    print(f"[WARN] 네이버 API 실패: {e}")
             
             # 실패 시 기본값
             if not sector_loaded:
