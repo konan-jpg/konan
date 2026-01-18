@@ -144,35 +144,45 @@ if 'code' in df.columns:
 st.success(f"✅ 데이터 로드: {filename} (총 {len(df)}개)")
 
 # === 주도 섹터 검증 패널 ===
-if sector_df is not None and 'sector' in df.columns:
-    st.markdown("### 🧭 주도 섹터 검증 (Market Leaders vs Scanner Results)")
-    
-    col_a, col_b = st.columns(2)
-    
-    with col_a:
-        st.info("📊 시장 객관적 주도 섹터 (Top-Down)")
+st.markdown("### 🧭 시장 주도 섹터 분석")
+
+col_a, col_b = st.columns(2)
+
+with col_a:
+    st.info("📊 시장 주도 섹터 (Top-Down)")
+    if sector_df is not None and len(sector_df) > 0:
         top_sectors = sector_df.head(5)[['Sector', 'AvgReturn_3M', 'StockCount']]
         st.dataframe(
             top_sectors.style.format({'AvgReturn_3M': '{:.1f}%'}),
             use_container_width=True,
             hide_index=True
         )
-        
-    with col_b:
-        st.success("🎯 내 스캐너 포착 섹터 (Bottom-Up)")
-        # 스캐너 결과에서 섹터 빈도 계산
-        scanner_sectors = df['sector'].value_counts().head(5).reset_index()
-        scanner_sectors.columns = ['Sector', 'Count']
-        
-        # 시장 주도 섹터와 일치 여부 확인
-        market_leaders = sector_df.head(5)['Sector'].tolist()
-        scanner_sectors['IsLeader'] = scanner_sectors['Sector'].apply(
-            lambda x: "✅ (일치)" if x in market_leaders else "-"
-        )
-        
-        st.dataframe(scanner_sectors, use_container_width=True, hide_index=True)
-        
-    st.markdown("---")
+    else:
+        st.caption("⚠️ 섹터 랭킹 데이터가 없습니다. GitHub Actions 실행 후 생성됩니다.")
+    
+with col_b:
+    st.success("🎯 스캐너 포착 섹터")
+    # 스캐너 결과에서 섹터 빈도 계산 ('기타' 제외)
+    if 'sector' in df.columns:
+        valid_sectors = df[df['sector'] != '기타']['sector']
+        if len(valid_sectors) > 0:
+            scanner_sectors = valid_sectors.value_counts().head(5).reset_index()
+            scanner_sectors.columns = ['Sector', 'Count']
+            
+            # 시장 주도 섹터와 일치 여부 확인
+            if sector_df is not None:
+                market_leaders = sector_df.head(5)['Sector'].tolist()
+                scanner_sectors['일치'] = scanner_sectors['Sector'].apply(
+                    lambda x: "✅" if x in market_leaders else "-"
+                )
+            
+            st.dataframe(scanner_sectors, use_container_width=True, hide_index=True)
+        else:
+            st.caption("⚠️ 섹터 정보가 없습니다. 다음 스캔 후 표시됩니다.")
+    else:
+        st.caption("⚠️ 섹터 컬럼이 없습니다.")
+
+st.markdown("---")
 
 
 if 'total_score' in df.columns:
@@ -365,11 +375,11 @@ if selected_code:
             price_vs_ma60 = (current_price - ma60) / ma60 * 100 if ma60 > 0 else 0
             
             # 전략 결정
-            if price_vs_ma20 <= 3:  # MA20 근처 눈림목
-                strategy = "눈림목 매수"
+            if price_vs_ma20 <= 3:  # MA20 근처 눌림목
+                strategy = "눌림목 매수"
                 strategy_icon = "🟢"
                 buy_price = ma20
-                reason = "MA20 근처로 눈림. 지지선에서 매수 기회"
+                reason = "MA20 근처로 눌림. 지지선에서 매수 기회"
             elif price_vs_ma20 > 8:  # MA20에서 많이 벗어남
                 strategy = "돌파 매수 대기"
                 strategy_icon = "🟡"
@@ -382,26 +392,22 @@ if selected_code:
                     buy_price = current_price * 1.01  # 직전 고점 위
                     reason = f"Setup {row.get('setup')}: 강한 패턴. 돌파 시 진입"
                 else:
-                    strategy = "눈림목 대기"
+                    strategy = "눌림목 대기"
                     strategy_icon = "🟠"
                     buy_price = ma20
-                    reason = "MA20까지 눈림 대기 후 진입 추천"
+                    reason = "MA20까지 눌림 대기 후 진입 추천"
             
             # 손절가 기준 리스크 계산
             risk_pct = (buy_price - stop_price) / buy_price * 100 if buy_price > 0 else 0
             
-            # UI 표시
-            strat_cols = st.columns([1, 2])
-            with strat_cols[0]:
-                st.metric("전략", f"{strategy_icon} {strategy}")
-                st.metric("추천 매수가", f"{buy_price:,.0f}원")
-            with strat_cols[1]:
-                st.info(f"""
+            # UI 표시 (모바일 친화적 - 세로 배치)
+            st.write(f"**{strategy_icon} {strategy}**")
+            st.write(f"📍 **추천 매수가: {buy_price:,.0f}원**")
+            st.info(f"""
 **판단 근거**: {reason}
 
-- 현재가 vs MA20: {price_vs_ma20:+.1f}%
-- 추천 매수가: **{buy_price:,.0f}원**
-- 손절가: {stop_price:,.0f}원 (리스크 {risk_pct:.1f}%)
+• 현재가 vs MA20: {price_vs_ma20:+.1f}%  
+• 손절가: {stop_price:,.0f}원 (리스크 {risk_pct:.1f}%)
 """)
         except Exception as e:
             st.warning(f"매수 전략 계산 오류: {e}")
