@@ -680,6 +680,77 @@ if selected_code:
                         row=1, col=1
                     )
                 
+                # 오닐 진입가/손절가 라인 (패턴 감지된 경우)
+                try:
+                    # 오닐 패턴 다시 분석 (차트 데이터 사용)
+                    if len(chart_df) >= 2:
+                        today_c = chart_df.iloc[-1]
+                        prev_c = chart_df.iloc[-2]
+                        ma20_chart = chart_df['MA20'].iloc[-1]
+                        vol_ma_chart = chart_df['Volume'].rolling(20).mean().iloc[-1]
+                        
+                        oneil_entry = 0
+                        oneil_sl = 0
+                        oneil_label = ""
+                        
+                        # Inside Day
+                        if today_c['High'] < prev_c['High'] and today_c['Low'] > prev_c['Low']:
+                            oneil_entry = today_c['High']
+                            oneil_sl = oneil_entry * 0.93
+                            oneil_label = "Inside Day"
+                        # Oops Reversal
+                        elif today_c['Open'] < prev_c['Low'] and today_c['Close'] > prev_c['Low'] and today_c['Close'] > ma20_chart:
+                            oneil_entry = today_c['Close']
+                            oneil_sl = oneil_entry * 0.93
+                            oneil_label = "Oops"
+                        # Pocket Pivot
+                        elif today_c['Volume'] > vol_ma_chart * 2.5 and today_c['Close'] > prev_c['Close'] * 1.04:
+                            oneil_entry = today_c['Close']
+                            oneil_sl = oneil_entry * 0.93
+                            oneil_label = "Pocket Pivot"
+                        
+                        # 오닐 라인 추가
+                        if oneil_entry > 0:
+                            # 진입가 라인 (보라색 점선)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=[chart_df.index[0], chart_df.index[-1]],
+                                    y=[oneil_entry, oneil_entry],
+                                    mode='lines',
+                                    name=f'💎진입 {oneil_entry:,.0f}',
+                                    line=dict(color='purple', width=1.5, dash='dot'),
+                                    hoverinfo='name+y'
+                                ),
+                                row=1, col=1
+                            )
+                            # 오닐 손절가 라인 (보라색 대시)
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=[chart_df.index[0], chart_df.index[-1]],
+                                    y=[oneil_sl, oneil_sl],
+                                    mode='lines',
+                                    name=f'💎손절 {oneil_sl:,.0f}',
+                                    line=dict(color='violet', width=1, dash='dash'),
+                                    hoverinfo='name+y'
+                                ),
+                                row=1, col=1
+                            )
+                            # 오닐 패턴 주석
+                            fig.add_annotation(
+                                x=chart_df.index[-1], y=oneil_entry,
+                                text=f"💎{oneil_label}",
+                                showarrow=True,
+                                arrowhead=2,
+                                arrowcolor="purple",
+                                ax=40, ay=0,
+                                bgcolor="rgba(138,43,226,0.2)",
+                                bordercolor="purple",
+                                font=dict(size=10, color="purple"),
+                                row=1, col=1
+                            )
+                except Exception as e:
+                    print(f"O'Neil Line Error: {e}")
+                
                 # 거래량 바
                 colors = ['red' if o <= c else 'blue' for o, c in zip(chart_df['Open'], chart_df['Close'])]
                 fig.add_trace(
