@@ -21,90 +21,103 @@ def get_stock_list(cfg):
             stocks = stocks[stocks["Marcap"] >= cfg["universe"]["min_mktcap_krw"]]
             stocks = stocks.sort_values("Marcap", ascending=False)
         
-        # Sector 정보가 없으면 여러 방법으로 가져오기 시도
-        if "Sector" not in stocks.columns or stocks["Sector"].isna().all():
+        # Sector 정보 가져오기 (여러 방법 시도)
+        if "Sector" not in stocks.columns or stocks["Sector"].isna().all() or (stocks["Sector"] == "기타").all():
             sector_loaded = False
             
-            # 방법 1: pykrx 라이브러리 사용 (가장 안정적)
+            # 기존 Sector 컬럼 제거 (있다면)
+            if "Sector" in stocks.columns:
+                stocks = stocks.drop(columns=["Sector"])
+            stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
+            
+            # 방법 1: FinanceDataReader에서 직접 Sector 가져오기
             try:
-                print("[INFO] pykrx에서 섹터 정보 가져오는 중...")
-                from pykrx import stock as pykrx_stock
-                
-                # 오늘 또는 최근 영업일 기준
-                today_str = datetime.now().strftime("%Y%m%d")
-                
-                sector_dict = {}
-                # KOSPI 섹터
+                print("[INFO] FinanceDataReader에서 섹터 정보 가져오는 중...")
+                # KRX 종목 상세 정보에서 업종 가져오기
+                krx_detail = fdr.StockListing("KRX-DESC")
+                if krx_detail is not None and "Sector" in krx_detail.columns:
+                    krx_detail = krx_detail[["Code", "Sector"]].copy()
+                    krx_detail["Code"] = krx_detail["Code"].astype(str).str.zfill(6)
+                    stocks = stocks.merge(krx_detail, on="Code", how="left")
+                    stocks["Sector"] = stocks["Sector"].fillna("기타")
+                    non_gita = (stocks["Sector"] != "기타").sum()
+                    if non_gita > 10:
+                        sector_loaded = True
+                        print(f"[OK] FDR 섹터 로드: {non_gita}개 종목에 섹터 정보")
+            except Exception as e:
+                print(f"[WARN] FDR 섹터 실패: {e}")
+            
+            # 방법 2: pykrx로 업종별 종목 가져오기
+            if not sector_loaded:
                 try:
-                    kospi_sectors = pykrx_stock.get_index_ticker_list(today_str, market="KOSPI")
-                    for ticker in stocks[stocks["Market"] == "KOSPI"]["Code"].tolist()[:100]:  # 샘플
+                    print("[INFO] pykrx에서 섹터 정보 가져오는 중...")
+                    from pykrx import stock as pykrx_stock
+                    
+                    # 최근 영업일 찾기
+                    from datetime import timedelta
+                    check_date = datetime.now()
+                    for _ in range(7):  # 최근 7일 중 영업일 찾기
+                        date_str = check_date.strftime("%Y%m%d")
                         try:
-                            info = pykrx_stock.get_market_sector_classifications(today_str, "KOSPI")
-                            if ticker in info.index:
-                                sector_dict[ticker] = info.loc[ticker, "업종명"] if "업종명" in info.columns else "기타"
+                            # KOSPI 업종 리스트
+                            kospi_sectors = pykrx_stock.get_index_ticker_list(date_str, market="KOSPI")
+                            if kospi_sectors:
+                                break
                         except:
                             pass
-                except:
-                    pass
-                
-                if sector_dict:
-                    stocks["Sector"] = stocks["Code"].map(sector_dict).fillna("기타")
-                    sector_loaded = True
-                    print(f"[OK] pykrx 섹터 로드: {stocks['Sector'].nunique()}개 업종")
-            except Exception as e:
-                print(f"[WARN] pykrx 실패: {e}")
-            
-            # 방법 2: KIND HTML 크롤링 (안정적)
-            if not sector_loaded:
-                try:
-                    print("[INFO] KIND에서 섹터 정보 가져오는 중...")
-                    krx_url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
-                    krx_df = pd.read_html(krx_url, encoding='euc-kr')[0]
-                    krx_df = krx_df[["종목코드", "업종"]]
-                    krx_df.columns = ["Code", "Sector"]
-                    krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
+                        check_date -= timedelta(days=1)
                     
-                    if "Sector" in stocks.columns:
-                        stocks = stocks.drop(columns=["Sector"])
-                    stocks["Code"] = stocks["Code"].astype(str).str.zfill(6)
-                    stocks = stocks.merge(krx_df, on="Code", how="left")
-                    stocks["Sector"] = stocks["Sector"].fillna("기타")
-                    sector_loaded = True
-                    print(f"[OK] KIND HTML 섹터 로드: {stocks['Sector'].nunique()}개 업종")
-                except Exception as e:
-                    print(f"[WARN] KIND HTML 실패: {e}")
-            
-            # 방법 3: 네이버 금융 API (추가 백업)
-            if not sector_loaded:
-                try:
-                    print("[INFO] 네이버 금융에서 섹터 정보 가져오는 중...")
-                    import requests
+                    sector_dict = {}
                     
-                    sector_map = {}
-                    sample_codes = stocks["Code"].head(50).tolist()
-                    
-                    for code in sample_codes:
+                    # 주요 업종별로 종목 가져오기
+                    for market in ["KOSPI", "KOSDAQ"]:
                         try:
-                            url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-                            r = requests.get(url, timeout=3)
-                            if r.status_code == 200:
-                                data = r.json()
-                                sector = data.get("industryCodeName", "기타")
-                                sector_map[code] = sector
-                            time.sleep(0.1)  # Rate limit
+                            sector_tickers = pykrx_stock.get_index_ticker_list(date_str, market=market)
+                            for sector_ticker in sector_tickers[:30]:  # 주요 30개 업종
+                                try:
+                                    sector_name = pykrx_stock.get_index_ticker_name(sector_ticker)
+                                    components = pykrx_stock.get_index_portfolio_deposit_file(sector_ticker, date_str)
+                                    if components:
+                                        for code in components:
+                                            sector_dict[code] = sector_name
+                                except:
+                                    continue
                         except:
                             continue
                     
-                    if sector_map:
-                        stocks["Sector"] = stocks["Code"].map(sector_map).fillna("기타")
-                        sector_loaded = True
-                        print(f"[OK] 네이버 API 섹터 로드: {len(sector_map)}개 종목")
+                    if sector_dict:
+                        stocks["Sector"] = stocks["Code"].map(sector_dict).fillna("기타")
+                        non_gita = (stocks["Sector"] != "기타").sum()
+                        if non_gita > 10:
+                            sector_loaded = True
+                            print(f"[OK] pykrx 섹터 로드: {non_gita}개 종목에 섹터 정보")
                 except Exception as e:
-                    print(f"[WARN] 네이버 API 실패: {e}")
+                    print(f"[WARN] pykrx 섹터 실패: {e}")
+            
+            # 방법 3: KIND HTML (백업)
+            if not sector_loaded:
+                try:
+                    print("[INFO] KIND에서 섹터 정보 가져오는 중...")
+                    import requests
+                    krx_url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
+                    krx_df = pd.read_html(requests.get(krx_url, timeout=15).text, encoding='cp949')[0]
+                    if "종목코드" in krx_df.columns and "업종" in krx_df.columns:
+                        krx_df = krx_df[["종목코드", "업종"]]
+                        krx_df.columns = ["Code", "Sector"]
+                        krx_df["Code"] = krx_df["Code"].astype(str).str.zfill(6)
+                        stocks = stocks.merge(krx_df, on="Code", how="left")
+                        stocks["Sector"] = stocks["Sector"].fillna("기타")
+                        non_gita = (stocks["Sector"] != "기타").sum()
+                        if non_gita > 10:
+                            sector_loaded = True
+                            print(f"[OK] KIND 섹터 로드: {non_gita}개 종목에 섹터 정보")
+                except Exception as e:
+                    print(f"[WARN] KIND 섹터 실패: {e}")
             
             # 실패 시 기본값
             if not sector_loaded:
-                stocks["Sector"] = "기타"
+                if "Sector" not in stocks.columns:
+                    stocks["Sector"] = "기타"
                 print("[WARN] 섹터 정보를 가져올 수 없어 '기타'로 설정")
         
         # Sector가 여전히 없으면 기본값
