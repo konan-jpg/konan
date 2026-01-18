@@ -5,19 +5,24 @@ import os
 from datetime import datetime
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from news_analyzer import search_naver_news
 
 st.set_page_config(layout="wide", page_title="추세추종 스캐너")
 
 @st.cache_data(ttl=300)
 def load_data():
     """데이터 로드"""
+    df = None
+    filename = None
+    
+    # 1. 병합된 전체 파일 먼저 확인
     merged_files = glob.glob("data/scanner_output*.csv")
     merged_files = [f for f in merged_files if 'chunk' not in f]
     
     if merged_files:
-        def extract_date(filename):
+        def extract_date(fn):
             try:
-                parts = os.path.basename(filename).replace('.csv', '').split('_')
+                parts = os.path.basename(fn).replace('.csv', '').split('_')
                 if len(parts) >= 3:
                     return parts[-1]
                 return '0000-00-00'
@@ -26,23 +31,10 @@ def load_data():
         
         latest_file = max(merged_files, key=extract_date)
         df = pd.read_csv(latest_file, dtype={'code': str})
-        return df, os.path.basename(latest_file)
-
-    chunk_files = glob.glob("data/partial/scanner_output*chunk*.csv")
-    
-    if chunk_files:
-        df_list = []
-        for f in sorted(chunk_files):
-            try:
-                sub_df = pd.read_csv(f, dtype={'code': str})
-                df_list.append(sub_df)
-            except:
-                continue
-        
-        if df_list:
         filename = os.path.basename(latest_file)
-
-    else: # No full files, try chunks
+    
+    else:
+        # 2. 병합 파일이 없으면 청크 파일 합치기
         chunk_files = glob.glob("data/partial/scanner_output*chunk*.csv")
         
         if chunk_files:
@@ -59,8 +51,8 @@ def load_data():
                 if 'code' in df.columns:
                     df.drop_duplicates(subset=['code'], keep='first', inplace=True)
                 filename = f"Merged from {len(df_list)} chunks"
-
-    # 섹터 데이터 로드
+    
+    # 3. 섹터 랭킹 데이터 로드
     sector_df = None
     if os.path.exists("data/sector_rankings.csv"):
         sector_df = pd.read_csv("data/sector_rankings.csv")
@@ -357,6 +349,63 @@ if selected_code:
                 if pd.notna(inst_net):
                     st.write(f"**기관 5일 순매수**: {inst_net/1e8:,.1f}억")
         
+        # === 매수 전략 추천 ===
+        st.markdown("---")
+        st.markdown("#### 🎯 매수 전략 추천")
+        
+        try:
+            current_price = row['close']
+            ma20 = row.get('ma20', current_price)
+            ma60 = row.get('ma60', current_price)
+            stop_price = row.get('stop', current_price * 0.92)
+            bb_upper = row.get('bb_upper', current_price * 1.05)  # 없으면 추정
+            
+            # 매수 전략 판단 로직
+            price_vs_ma20 = (current_price - ma20) / ma20 * 100 if ma20 > 0 else 0
+            price_vs_ma60 = (current_price - ma60) / ma60 * 100 if ma60 > 0 else 0
+            
+            # 전략 결정
+            if price_vs_ma20 <= 3:  # MA20 근처 눈림목
+                strategy = "눈림목 매수"
+                strategy_icon = "🟢"
+                buy_price = ma20
+                reason = "MA20 근처로 눈림. 지지선에서 매수 기회"
+            elif price_vs_ma20 > 8:  # MA20에서 많이 벗어남
+                strategy = "돌파 매수 대기"
+                strategy_icon = "🟡"
+                buy_price = bb_upper if bb_upper > current_price else current_price * 1.02
+                reason = "고점권. BB상단 돌파 시 진입 고려"
+            else:  # 중간 지점
+                if row.get('setup', '-') in ['R', 'B']:  # 강력한 패턴
+                    strategy = "돌파 매수"
+                    strategy_icon = "🔴"
+                    buy_price = current_price * 1.01  # 직전 고점 위
+                    reason = f"Setup {row.get('setup')}: 강한 패턴. 돌파 시 진입"
+                else:
+                    strategy = "눈림목 대기"
+                    strategy_icon = "🟠"
+                    buy_price = ma20
+                    reason = "MA20까지 눈림 대기 후 진입 추천"
+            
+            # 손절가 기준 리스크 계산
+            risk_pct = (buy_price - stop_price) / buy_price * 100 if buy_price > 0 else 0
+            
+            # UI 표시
+            strat_cols = st.columns([1, 2])
+            with strat_cols[0]:
+                st.metric("전략", f"{strategy_icon} {strategy}")
+                st.metric("추천 매수가", f"{buy_price:,.0f}원")
+            with strat_cols[1]:
+                st.info(f"""
+**판단 근거**: {reason}
+
+- 현재가 vs MA20: {price_vs_ma20:+.1f}%
+- 추천 매수가: **{buy_price:,.0f}원**
+- 손절가: {stop_price:,.0f}원 (리스크 {risk_pct:.1f}%)
+""")
+        except Exception as e:
+            st.warning(f"매수 전략 계산 오류: {e}")
+        
         # 기술적 지표
         st.markdown("---")
         st.markdown("#### 📊 기술적 지표")
@@ -374,6 +423,30 @@ if selected_code:
         with indicator_cols[3]:
             if 'stop' in row and pd.notna(row['stop']):
                 st.write(f"**손절가**: {row['stop']:,.0f}원")
+        
+        # === 최신 뉴스 ===
+        st.markdown("---")
+        st.markdown("#### 📰 최신 뉴스")
+        
+        try:
+            client_id = os.environ.get("NAVER_CLIENT_ID", "")
+            client_secret = os.environ.get("NAVER_CLIENT_SECRET", "")
+            
+            if client_id and client_secret:
+                news_list = search_naver_news(row['name'], client_id, client_secret, display=5)
+                
+                if news_list:
+                    for news in news_list:
+                        title = news.get('title', '')
+                        link = news.get('link', '')
+                        pub_date = news.get('pubDate', '')[:16]  # 날짜만
+                        st.markdown(f"- [{title}]({link}) ({pub_date})")
+                else:
+                    st.caption("관련 뉴스가 없습니다.")
+            else:
+                st.caption("네이버 API 키가 설정되지 않았습니다. (Streamlit Cloud 환경변수 설정 필요)")
+        except Exception as e:
+            st.caption(f"뉴스 로드 오류: {e}")
         
         # 차트
         st.markdown("---")
