@@ -10,9 +10,8 @@ from news_analyzer import search_naver_news
 import FinanceDataReader as fdr
 import yaml
 from scanner_core import calculate_signals, score_stock
-
+from image_analysis import analyze_chart_image
 st.set_page_config(layout="wide", page_title="추세추종 스캐너")
-
 # ---------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------
@@ -24,7 +23,6 @@ def load_config():
         with open(cfg_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
     return {}
-
 @st.cache_data(ttl=300)
 def load_data():
     """Load scanner result and sector ranking data"""
@@ -66,13 +64,11 @@ def load_data():
     if os.path.exists("data/sector_rankings.csv"):
         sector_df = pd.read_csv("data/sector_rankings.csv")
     return df, sector_df, filename
-
 @st.cache_data
 def get_krx_codes():
     """Return DataFrame with KRX stock codes and names"""
     df = fdr.StockListing("KRX")
     return df[['Code', 'Name']]
-
 def get_setup_explanations():
     return {
         'R': "🔥 재돌파 패턴 - 60일 내 BB 60-2 돌파 후 눌림 → 재돌파 (가장 강력)",
@@ -81,7 +77,6 @@ def get_setup_explanations():
         'C': "20일 이평선 돌파 + 거래량 증가 + ADX 상승 추세",
         '-': "기본 추세 및 유동성 기준만 충족",
     }
-
 def get_score_explanations():
     return {
         'trend_score': {
@@ -136,7 +131,6 @@ def get_score_explanations():
             ]
         }
     }
-
 # ---------------------------------------------------
 # UI Rendering for a single stock (used by all modes)
 # ---------------------------------------------------
@@ -337,7 +331,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
             st.write(f"**ADX**: {row['adx']:.1f}")
     with ind_cols[3]:
         if 'stop' in row and pd.notna(row['stop']):
-            st.write(f"**손절가**: {row['stop']:,.0f}원")
+            st.write(f"**최종 손절가격**: {row['stop']:,.0f}원")
     # News
     st.markdown("---")
     st.markdown("#### 📰 최신 뉴스")
@@ -370,7 +364,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
             std = chart_df['Close'].rolling(60).std()
             chart_df['BB_Upper'] = mid + 2 * std
             chart_df['BB_Lower'] = mid - 2 * std
-            fig = make_subplots(rows=2, cols=1, row_heights=[0.75, 0.25], vertical_spacing=0.03)
+            fig = make_subplots(rows=2, cols=1, row_heights=[0.75, 0.25], vertical_spacing=0.03, shared_xaxes=True)
             # Candlestick
             fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name=f'가격 {row["close"]:,.0f}', increasing_line_color='red', decreasing_line_color='blue'), row=1, col=1)
             # MA lines
@@ -382,6 +376,28 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
             if 'stop' in row and pd.notna(row['stop']):
                 stop_price = row['stop']
                 fig.add_trace(go.Scatter(x=[chart_df.index[0], chart_df.index[-1]], y=[stop_price, stop_price], mode='lines', name=f'손절 {stop_price:,.0f}', line=dict(color='red', width=1.5, dash='dash'), hoverinfo='name+y'), row=1, col=1)
+            
+            # 장대양봉 + 대량거래 감지 (O'Neil Pocket Pivot 등)
+            vol_ma20 = chart_df['Volume'].rolling(20).mean()
+            big_bullish_volume = []
+            for i in range(1, len(chart_df)):
+                curr = chart_df.iloc[i]
+                prev = chart_df.iloc[i-1]
+                body_size = abs(curr['Close'] - curr['Open'])
+                candle_range = curr['High'] - curr['Low']
+                is_bullish = curr['Close'] > curr['Open']
+                is_big_body = body_size > candle_range * 0.6 if candle_range > 0 else False
+                is_high_vol = curr['Volume'] > vol_ma20.iloc[i] * 2.0 if pd.notna(vol_ma20.iloc[i]) else False
+                is_up_day = curr['Close'] > prev['Close'] * 1.03
+                if is_bullish and is_big_body and is_high_vol and is_up_day:
+                    big_bullish_volume.append((chart_df.index[i], curr['High']))
+            
+            # 장대양봉+대량거래 마커 표시
+            if big_bullish_volume:
+                marker_dates = [x[0] for x in big_bullish_volume]
+                marker_prices = [x[1] * 1.02 for x in big_bullish_volume]  # 약간 위에 표시
+                fig.add_trace(go.Scatter(x=marker_dates, y=marker_prices, mode='markers+text', name='🔥 장대양봉+대량거래', marker=dict(symbol='triangle-up', size=12, color='red'), text=['🔥' for _ in marker_dates], textposition='top center', hoverinfo='name'), row=1, col=1)
+            
             # O'Neil lines (if any)
             try:
                 if len(chart_df) >= 2:
@@ -403,31 +419,37 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                     elif today_c['Volume'] > vol_ma_chart * 2.5 and today_c['Close'] > prev_c['Close'] * 1.04:
                         oneil_entry = today_c['Close']
                         oneil_sl = oneil_entry * 0.93
-                        oneil_label = "Pocket"
+                        oneil_label = "Pocket Pivot"
                     if oneil_entry > 0:
                         fig.add_trace(go.Scatter(x=[chart_df.index[0], chart_df.index[-1]], y=[oneil_entry, oneil_entry], mode='lines', name=f'💎진입 {oneil_entry:,.0f}', line=dict(color='purple', width=1.5, dash='dot'), hoverinfo='name+y'), row=1, col=1)
                         fig.add_trace(go.Scatter(x=[chart_df.index[0], chart_df.index[-1]], y=[oneil_sl, oneil_sl], mode='lines', name=f'💎손절 {oneil_sl:,.0f}', line=dict(color='violet', width=1, dash='dash'), hoverinfo='name+y'), row=1, col=1)
-                        fig.add_annotation(x=chart_df.index[-1], y=oneil_entry, text=f"💎{oneil_label}", showarrow=True, arrowhead=2, arrowcolor='purple', ax=40, ay=0, bgcolor='rgba(138,43,226,0.2)', bordercolor='purple', font=dict(size=10, color='purple'), row=1, col=1)
+                        fig.add_annotation(x=chart_df.index[-1], y=oneil_entry, text=f"💎{oneil_label}", showarrow=True, arrowhead=2, arrowcolor='purple', ax=40, ay=-20, bgcolor='rgba(138,43,226,0.2)', bordercolor='purple', font=dict(size=10, color='purple'), row=1, col=1)
             except Exception:
                 pass
             # Volume bar
             colors = ['red' if o <= c else 'blue' for o, c in zip(chart_df['Open'], chart_df['Close'])]
             fig.add_trace(go.Bar(x=chart_df.index, y=chart_df['Volume'], name='거래량', marker_color=colors, opacity=0.5), row=2, col=1)
+            
+            # 차트 레이아웃 설정: 범례 상단, rangeslider 비활성화
+            fig.update_layout(
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
+                xaxis_rangeslider_visible=False,
+                height=500,
+                margin=dict(l=50, r=50, t=50, b=30)
+            )
+            fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.warning(f"차트 생성 오류: {e}")
-
 # ---------------------------------------------------
 # Main App UI
 # ---------------------------------------------------
 st.sidebar.title("메뉴")
 mode = st.sidebar.radio("모드 선택", ["🔍 실시간 종목 진단", "📊 당일 시장 스캐너", "🖼️ 차트 이미지 분석"])
-
 # Refresh button (common)
 if st.sidebar.button("🔄 데이터/캐시 새로고침", help="스캔된 최신 데이터를 불러오고 화면을 갱신합니다."):
     st.cache_data.clear()
     st.rerun()
-
 if mode == "📊 당일 시장 스캐너":
     # 기존 스캐너 UI (필터, 테이블, 선택)
     min_score = st.slider("최소 점수", 0, 100, 50, key='min_score_slider')
@@ -494,7 +516,6 @@ if mode == "📊 당일 시장 스캐너":
     if selected_code:
         row = df[df['code'] == selected_code].iloc[0]
         display_stock_report(row, sector_df)
-
 elif mode == "🔍 실시간 종목 진단":
     st.subheader("🔍 실시간 종목 진단")
     stock_df = get_krx_codes()
@@ -510,7 +531,7 @@ elif mode == "🔍 실시간 종목 진단":
     if df_stock is not None and len(df_stock) > 0:
         cfg = load_config()
         sig = calculate_signals(df_stock, cfg)
-        result = score_stock(df_stock, sig, cfg)
+        result = score_stock(df_stock, sig, cfg, rs_3m=rs_3m, rs_6m=rs_6m)
         if result:
             row = pd.Series(result)
             row['name'] = selected_name
@@ -521,12 +542,31 @@ elif mode == "🔍 실시간 종목 진단":
             st.error("점수 계산에 실패했습니다.")
     else:
         st.error("데이터를 불러올 수 없습니다.")
-
 elif mode == "🖼️ 차트 이미지 분석":
     st.subheader("🖼️ 차트 이미지 분석 (베타)")
     uploaded = st.file_uploader("차트 이미지 업로드", type=["png","jpg","jpeg"])
     if uploaded:
         st.image(uploaded, caption="업로드된 차트", use_column_width=True)
+        
+        # Analyze image
+        with st.spinner("이미지 분석 중... (OCR 및 패턴 인식)"):
+            # Pillow image conversion if needed, but analyze_chart_image stub handles raw BytesIO for now or we might need PIL
+            from PIL import Image
+            img = Image.open(uploaded)
+            analysis_result = analyze_chart_image(img)
+        
+        # Display analysis results
+        if analysis_result:
+            with st.expander("🔍 이미지 분석 결과 (베타)", expanded=True):
+                col_i1, col_i2 = st.columns(2)
+                with col_i1:
+                    st.markdown("**📝 텍스트 인식 (OCR)**")
+                    for line in analysis_result.get("ocr_text", []):
+                        st.caption(f"- {line}")
+                with col_i2:
+                    st.markdown("**🧩 감지된 패턴**")
+                    for pat in analysis_result.get("patterns", []):
+                        st.success(f"{pat['name']} (신뢰도: {pat['confidence']*100:.0f}%)")
         # After image, still need stock selection & RS
         stock_df = get_krx_codes()
         selected_name = st.selectbox("종목명 선택 (오타 자동완성)", stock_df['Name'], key='img_name')
@@ -538,7 +578,7 @@ elif mode == "🖼️ 차트 이미지 분석":
         if df_stock is not None and len(df_stock) > 0:
             cfg = load_config()
             sig = calculate_signals(df_stock, cfg)
-            result = score_stock(df_stock, sig, cfg)
+            result = score_stock(df_stock, sig, cfg, rs_3m=rs_3m, rs_6m=rs_6m)
             if result:
                 row = pd.Series(result)
                 row['name'] = selected_name
@@ -549,4 +589,3 @@ elif mode == "🖼️ 차트 이미지 분석":
                 st.error("점수 계산에 실패했습니다.")
         else:
             st.error("데이터를 불러올 수 없습니다.")
-
