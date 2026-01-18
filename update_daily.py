@@ -20,6 +20,11 @@ def get_stock_list(cfg):
         if "Marcap" in stocks.columns:
             stocks = stocks[stocks["Marcap"] >= cfg["universe"]["min_mktcap_krw"]]
             stocks = stocks.sort_values("Marcap", ascending=False)
+        
+        # Sector 컬럼이 없는 경우 처리
+        if "Sector" not in stocks.columns:
+            stocks["Sector"] = "Unknown"
+            
         os.makedirs("data", exist_ok=True)
         stocks.to_csv("data/krx_backup.csv", index=False, encoding="utf-8-sig")
         return stocks
@@ -83,6 +88,62 @@ def get_investor_data(code, days=10):
         print(f"[ERR] {code} 투자자 에러: {e}")
         return None
 
+def calculate_sector_rankings(stocks, top_n=500):
+    """
+    시장 전체 주도 섹터 분석 (독립적 검증용)
+    - 시총 상위 500개 종목을 대상으로 섹터별 평균 수익률 계산
+    """
+    print(f"\\n[SECTOR] 시장 주도 섹터 분석 시작 (상위 {top_n}개 모집단)...")
+    
+    try:
+        # 1. 모집단 선정 (시총 상위)
+        universe = stocks.head(top_n).copy()
+        
+        # 2. 섹터별 그룹화 및 표본 추출 (각 섹터 대장주 5개)
+        sector_groups = universe.groupby("Sector")
+        
+        sector_results = []
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90) # 3개월 추세
+        
+        for sector, group in sector_groups:
+            if len(group) < 3: # 너무 작은 섹터 제외
+                continue
+                
+            # 섹터 내 시총 상위 5개만 표본으로 선정
+            top_stocks = group.head(5)
+            
+            returns = []
+            for _, row in top_stocks.iterrows():
+                try:
+                    df = fdr.DataReader(row["Code"], start_date, end_date)
+                    if df is not None and len(df) > 20:
+                        # 3개월 등락률
+                        ret = (df["Close"].iloc[-1] / df["Close"].iloc[0] - 1) * 100
+                        returns.append(ret)
+                except:
+                    continue
+            
+            if returns:
+                avg_return = sum(returns) / len(returns)
+                sector_results.append({
+                    "Sector": sector,
+                    "AvgReturn_3M": avg_return,
+                    "StockCount": len(group)
+                })
+        
+        # 3. 랭킹 산출 및 저장
+        if sector_results:
+            rank_df = pd.DataFrame(sector_results).sort_values("AvgReturn_3M", ascending=False)
+            rank_df.insert(0, "Rank", range(1, len(rank_df) + 1))
+            
+            os.makedirs("data", exist_ok=True)
+            rank_df.to_csv("data/sector_rankings.csv", index=False, encoding="utf-8-sig")
+            print(f"[SECTOR] 섹터 랭킹 저장 완료: data/sector_rankings.csv (1위: {rank_df.iloc[0]['Sector']})")
+        
+    except Exception as e:
+        print(f"[ERR] 섹터 분석 중 오류: {e}")
+
 def main():
     cfg = load_config()
     stocks = get_stock_list(cfg)
@@ -102,8 +163,13 @@ def main():
     
     print(f"[SCAN] Chunk {chunk}: {len(stocks)}개 종목 스캔 시작 (인덱스 {start_i}~{end_i})")
     
+    # === 0단계: 주도 섹터 분석 (독립 검증용) ===
+    # 첫 번째 청크 실행 시에만 수행 (중복 방지)
+    if chunk == 1:
+        calculate_sector_rankings(stocks)
+
     # === 1단계: 기술적 스캔 ===
-    print("\n[STEP1] 기술적 스캔 시작...")
+    print("\\n[STEP1] 기술적 스캔 시작...")
     tech_results = []
     end = datetime.now()
     start = end - timedelta(days=400)
@@ -116,6 +182,7 @@ def main():
         name = getattr(row, "Name", None)
         market = getattr(row, "Market", "")
         mktcap = getattr(row, "Marcap", None)
+        sector = getattr(row, "Sector", "Unknown")
         
         if not code or not name:
             continue
@@ -146,6 +213,7 @@ def main():
                 "name": name,
                 "market": market,
                 "mktcap": mktcap,
+                "sector": sector,
                 **scored,
             })
             
@@ -157,7 +225,7 @@ def main():
                 print(f"[WARN] {name} ({code}) 에러: {e}")
             continue
     
-    print(f"\n[STEP1 DONE] 총 {scanned_count}개 검토, {len(tech_results)}개 기술적 조건 충족")
+    print(f"\\n[STEP1 DONE] 총 {scanned_count}개 검토, {len(tech_results)}개 기술적 조건 충족")
     
     if not tech_results:
         print("[WARN] 조건에 맞는 종목이 없습니다.")
@@ -165,7 +233,7 @@ def main():
         os.makedirs("data/partial", exist_ok=True)
         output_file = f"data/partial/scanner_output_{scan_day}_chunk{chunk}.csv"
         empty_df = pd.DataFrame(columns=[
-            "rank", "code", "name", "market", "close", "total_score", 
+            "rank", "code", "name", "market", "sector", "close", "total_score", 
             "trend_score", "pattern_score", "volume_score", "supply_score", "risk_score",
             "setup", "ma20", "ma60", "scan_date", "chunk"
         ])
@@ -179,7 +247,7 @@ def main():
     top_candidates = cfg.get("investor", {}).get("top_candidates", 100)
     candidates = tech_df.head(top_candidates)
     
-    print(f"\n[STEP2] 상위 {len(candidates)}개 종목 수급 데이터 조회...")
+    print(f"\\n[STEP2] 상위 {len(candidates)}개 종목 수급 데이터 조회...")
     
     final_results = []
     for idx, row in candidates.iterrows():
@@ -236,7 +304,7 @@ def main():
         
         time.sleep(0.2)  # API 부하 방지
     
-    print(f"\n[STEP2 DONE] {len(final_results)}개 종목 최종 점수 계산 완료")
+    print(f"\\n[STEP2 DONE] {len(final_results)}개 종목 최종 점수 계산 완료")
     
     # 결과 저장
     scan_day = datetime.now().strftime("%Y-%m-%d")
