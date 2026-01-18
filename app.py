@@ -26,6 +26,20 @@ def load_data():
         
         latest_file = max(merged_files, key=extract_date)
         df = pd.read_csv(latest_file, dtype={'code': str})
+        return df, os.path.basename(latest_file)
+
+    chunk_files = glob.glob("data/partial/scanner_output*chunk*.csv")
+    
+    if chunk_files:
+        df_list = []
+        for f in sorted(chunk_files):
+            try:
+                sub_df = pd.read_csv(f, dtype={'code': str})
+                df_list.append(sub_df)
+            except:
+                continue
+        
+        if df_list:
         filename = os.path.basename(latest_file)
 
     else: # No full files, try chunks
@@ -45,10 +59,6 @@ def load_data():
                 if 'code' in df.columns:
                     df.drop_duplicates(subset=['code'], keep='first', inplace=True)
                 filename = f"Merged from {len(df_list)} chunks"
-            else:
-                return None, None, None
-        else:
-            return None, None, None
 
     # 섹터 데이터 로드
     sector_df = None
@@ -258,6 +268,19 @@ if selected_code:
         st.markdown("---")
         st.subheader(f"📊 {row['name']} ({row['code']}) 상세 분석")
         
+        # 주도섹터 여부 확인
+        stock_sector = row.get('sector', '기타')
+        is_leader_sector = False
+        if sector_df is not None:
+            market_leaders = sector_df.head(5)['Sector'].tolist()
+            is_leader_sector = stock_sector in market_leaders
+        
+        # 업종 배지 표시
+        if is_leader_sector:
+            st.success(f"🏆 **주도 섹터**: {stock_sector} ← 시장 상위 5개 업종에 속함!")
+        else:
+            st.info(f"📌 **업종**: {stock_sector}")
+        
         # 메트릭 (5열)
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
@@ -462,38 +485,56 @@ if selected_code:
                 # 캔들 패턴 및 거래량 급등 주석 추가 (최근 60일)
                 try:
                     recent_df = chart_df.iloc[-60:] if len(chart_df) > 60 else chart_df
-                    vol_ma20 = recent_df['Volume'].rolling(20).mean()
+                    vol_ma20 = chart_df['Volume'].rolling(20).mean()  # 전체 데이터로 MA 계산
                     
                     for date in recent_df.index:
-                        # 1. 대량거래 (평균 대비 3배 이상 + 양봉)
                         vol_val = recent_df.loc[date, 'Volume']
-                        ma_val = vol_ma20.loc[date]
-                        
-                        if pd.notna(ma_val) and ma_val > 0 and vol_val >= ma_val * 3:
-                            if recent_df.loc[date, 'Close'] >= recent_df.loc[date, 'Open']:
-                                fig.add_annotation(
-                                    x=date,
-                                    y=recent_df.loc[date, 'High'],
-                                    text="⚡대량",
-                                    showarrow=True,
-                                    arrowhead=1,
-                                    yshift=10,
-                                    font=dict(color="red", size=9),
-                                    row=1, col=1
-                                )
-                        
-                        # 2. 장대양봉 (5% 이상 상승)
+                        ma_val = vol_ma20.loc[date] if date in vol_ma20.index else 0
                         open_p = recent_df.loc[date, 'Open']
                         close_p = recent_df.loc[date, 'Close']
-                        if open_p > 0 and (close_p - open_p) / open_p >= 0.05:
+                        high_p = recent_df.loc[date, 'High']
+                        low_p = recent_df.loc[date, 'Low']
+                        
+                        is_high_volume = pd.notna(ma_val) and ma_val > 0 and vol_val >= ma_val * 2.5
+                        is_bullish = close_p > open_p
+                        is_bearish = close_p < open_p
+                        is_long_candle = open_p > 0 and abs(close_p - open_p) / open_p >= 0.04
+                        
+                        # 장대양봉 + 대량거래
+                        if is_high_volume and is_bullish and is_long_candle:
                             fig.add_annotation(
                                 x=date,
-                                y=recent_df.loc[date, 'Low'],
-                                text="🔥장대",
+                                y=high_p,
+                                text="🔥장대양봉+대량",
+                                showarrow=True,
+                                arrowhead=2,
+                                ay=-30,
+                                font=dict(color="red", size=10, weight="bold"),
+                                bgcolor="rgba(255,200,200,0.8)",
+                                row=1, col=1
+                            )
+                        # 장대음봉 + 대량거래
+                        elif is_high_volume and is_bearish and is_long_candle:
+                            fig.add_annotation(
+                                x=date,
+                                y=low_p,
+                                text="💀장대음봉+대량",
+                                showarrow=True,
+                                arrowhead=2,
+                                ay=30,
+                                font=dict(color="blue", size=10, weight="bold"),
+                                bgcolor="rgba(200,200,255,0.8)",
+                                row=1, col=1
+                            )
+                        # 대량거래만 (양봉)
+                        elif is_high_volume and is_bullish:
+                            fig.add_annotation(
+                                x=date,
+                                y=high_p,
+                                text="⚡대량",
                                 showarrow=True,
                                 arrowhead=1,
-                                yshift=-20,
-                                flow="up",
+                                ay=-20,
                                 font=dict(color="red", size=9),
                                 row=1, col=1
                             )
@@ -537,3 +578,4 @@ else:
 
 st.markdown("---")
 st.caption(f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {filename}")
+```
