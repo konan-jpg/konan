@@ -234,18 +234,18 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     # Here we just show the metric clearly
     
     max_scores = [25, 30, 20, 15, 10]
-    cols = st.columns(6) # Increased columns to add RS
+    cols = st.columns(5) # Back to 5 columns to match Total Score components
     
     with cols[0]: st.metric("추세", f"{score_data['추세']:.0f}/25")
-    with cols[1]: st.metric("패턴\n(RS포함)", f"{score_data['패턴']:.0f}/30")
+    
+    # Pattern Score specialized display
+    pat_str = f"{score_data['패턴']:.0f}/30"
+    with cols[1]: 
+        st.metric("패턴 (RS포함)", pat_str, delta=f"+RS {rs_total_bonus}" if rs_total_bonus > 0 else None)
+        
     with cols[2]: st.metric("거래량", f"{score_data['거래량']:.0f}/20")
     with cols[3]: st.metric("수급", f"{score_data['수급']:.0f}/15")
     with cols[4]: st.metric("리스크", f"{score_data['리스크']:.0f}/10")
-    with cols[5]: 
-        if rs_total_bonus > 0:
-            st.metric("✅RS가산", f"+{rs_total_bonus}")
-        else:
-            st.metric("RS가산", "0")
     for key, info in score_info.items():
         with st.expander(f"🔹 {info['name']}", expanded=False):
             st.markdown(f"**{info['description']}**")
@@ -649,12 +649,13 @@ elif mode == "🖼️ 차트 이미지 분석":
                 if 'rs_6m' not in row: row['rs_6m'] = rs_6m
                 
                 # Inject investor data for display (Recent Supply Status section)
+                # Look for standardized keys from scanner_core first, then fallback to internal dict keys
                 if 'foreign_consec_buy' not in row and 'foreign_consecutive_buy' in investor_data:
                     row['foreign_consec_buy'] = investor_data['foreign_consecutive_buy']
-                if 'inst_net_5d' not in row and 'inst_net_buy_5d' in investor_data:
-                    row['inst_net_5d'] = investor_data['inst_net_buy_5d']
                 if 'foreign_net_5d' not in row and 'foreign_net_buy_5d' in investor_data:
                     row['foreign_net_5d'] = investor_data['foreign_net_buy_5d']
+                if 'inst_net_5d' not in row and 'inst_net_buy_5d' in investor_data:
+                    row['inst_net_5d'] = investor_data['inst_net_buy_5d']
                 
                 display_stock_report(row, sector_df=None, rs_3m=rs_3m, rs_6m=rs_6m)
             else:
