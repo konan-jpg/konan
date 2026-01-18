@@ -1,42 +1,32 @@
-import logging
-
-def analyze_chart_image(image):
+# -*- coding: utf-8 -*-
+import io
+def analyze_chart_image(image_file):
     """
-    Analyze the uploaded chart image.
-    This is a stub implementation. In a real scenario, this would use:
-    - OCR (pytesseract or Cloud Vision API) to extract text (stock name, price, date).
-    - OpenCV or Deep Learning models to detect patterns (candlesticks, volume bars).
+    Placeholder for Image Analysis.
+    Currently, this function does not perform actual OCR or Pattern Recognition.
+    It returns a status message indicating that the feature is under development.
     
     Args:
-        image: A PIL Image object.
-        
-    Returns:
-        dict: Analysis results containing 'ocr_text', 'patterns', etc.
-    """
-    results = {
-        "ocr_text": [],
-        "patterns": [],
-        "estimated_data": {}
-    }
+        image_file: Pillow Image object or file-like object
     
-    try:
-        # Placeholder for OCR
-        # import pytesseract
-        # text = pytesseract.image_to_string(image, lang='kor+eng')
-        # results["ocr_text"] = text.split('\n')
-        
-        # Stub result
-        results["ocr_text"] = ["종목명: 삼성전자 (예시)", "날짜: 2024-01-01", "가격: 75,000"]
-        
-        # Placeholder for Pattern Detection
-        # Check for red/blue pixels to estimate bullish/bearish candles
-        # This is just a dummy return for UI demonstration
-        results["patterns"] = [
-            {"name": "상승 장악형 (예시)", "confidence": 0.85},
-            {"name": "거래량 급등 (예시)", "confidence": 0.90}
+    Returns:
+        dict: Analysis result with a status message.
+    """
+    # In a real implementation, you would use:
+    # 1. Tesseract OCR (requires 'tesseract' installed on OS) for text extraction.
+    # 2. OpenCV for shape/pattern detection.
+    # 3. Or an external API like Google Cloud Vision / OpenAI GPT-4o.
+    
+    # Since we cannot easily install system dependencies on basic Streamlit Cloud,
+    # we return a placeholder message for now.
+    
+    return {
+        "ocr_text": [
+            "⚠️ 이미지 분석 엔진이 연동되지 않았습니다.",
+            "현재 버전은 사용자 인터페이스(UI) 테스트 모드입니다.",
+            "추후 OCR(Tesseract) 또는 GPT-4o Vision API 연동이 필요합니다."
+        ],
+        "patterns": [
+            {"name": "분석 엔진 대기 중", "confidence": 0.0}
         ]
-        
-    except Exception as e:
-        logging.error(f"Image analysis failed: {e}")
-        
-    return results
+    }
