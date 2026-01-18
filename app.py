@@ -209,8 +209,8 @@ with st.popover("ℹ️ 점수 구성 설명", use_container_width=True):
 
 st.caption("👆 행 클릭 → 상세 분석 | ℹ️ 터치 → 점수 설명")
 
-# 표시할 컬럼 (새 점수 체계)
-display_cols = ['code', 'name', 'sector', 'close', 'total_score', 'setup', 'trend_score', 'pattern_score', 'volume_score', 'supply_score']
+# 표시할 컬럼 (새 점수 체계) - 코드 제외
+display_cols = ['name', 'sector', 'close', 'total_score', 'setup', 'trend_score', 'pattern_score', 'volume_score', 'supply_score']
 display_cols = [col for col in display_cols if col in filtered_df.columns]
 
 # 레거시 컬럼 대체
@@ -228,10 +228,9 @@ display_cols = [col for col in display_cols if col in filtered_df.columns]
 display_df = filtered_df[display_cols].copy()
 display_df.insert(0, '순위', range(1, len(display_df) + 1))
 
-# 컬럼명 한글화
+# 컬럼명 한글화 (코드 제외)
 rename_map = {
     '순위': '순위',
-    'code': '코드',
     'name': '종목명',
     'sector': '업종',
     'close': '현재가',
@@ -413,6 +412,51 @@ if selected_code:
             pullback_price = ma20  # 눌림목 기준: 20일선
             breakout_price = bb_upper if bb_upper > current_price else current_price * 1.02 # 돌파 기준: 볼밴 상단
             
+            # 오닐/미너비니 전략 가격 계산 (차트 데이터 필요)
+            oneil_msg = "패턴 형성 대기중"
+            oneil_price = 0
+            oneil_risk = 0
+            oneil_setup_name = "-"
+            
+            # 차트 데이터가 있으면 패턴 분석
+            try:
+                import FinanceDataReader as fdr
+                from datetime import timedelta
+                # 최신 데이터 가져와서 분석
+                end_date_s = datetime.now()
+                start_date_s = end_date_s - timedelta(days=60)
+                sub_df = fdr.DataReader(row['code'], start_date_s, end_date_s)
+                
+                if sub_df is not None and len(sub_df) >= 2:
+                    today = sub_df.iloc[-1]
+                    prev = sub_df.iloc[-2]
+                    
+                    # 1. Inside Day (변동성 축소) -> 오늘 고가 돌파 시 매수
+                    if today['High'] < prev['High'] and today['Low'] > prev['Low']:
+                        oneil_price = today['High']
+                        oneil_setup_name = "Inside Day 돌파"
+                        oneil_msg = f"오늘 고가({int(today['High']):,}원) 돌파 시 진입"
+                    
+                    # 2. Oops Reversal (속임수 반전) -> 상승 추세일 때만 유효
+                    elif today['Open'] < prev['Low'] and today['Close'] > prev['Low'] and today['Close'] > ma20:
+                        oneil_price = today['Close']
+                        oneil_setup_name = "Oops Reversal"
+                        oneil_msg = "속임수 반전 확인. 종가/익일 시가 진입"
+                        
+                    # 3. Pocket Pivot (거래량 매집) -> 종가 진입
+                    else:
+                        vol_ma = sub_df['Volume'].rolling(20).mean().iloc[-1]
+                        if today['Volume'] > vol_ma * 2.5 and today['Close'] > prev['Close'] * 1.04:
+                            oneil_price = today['Close']
+                            oneil_setup_name = "Pocket Pivot"
+                            oneil_msg = "거래량 급등(매집). 눌림 시 매수 유효"
+                        
+                    # 오닐 전략 리스크
+                    if oneil_price > 0:
+                        oneil_risk = (oneil_price - stop_price) / oneil_price * 100
+            except:
+                pass
+            
             # 리스크 계산
             risk_pullback = (pullback_price - stop_price) / pullback_price * 100
             risk_breakout = (breakout_price - stop_price) / breakout_price * 100
@@ -428,28 +472,43 @@ if selected_code:
             else:
                 status_msg = "🟠 **중립 구간**입니다. 방향성 관찰 필요."
 
-            # UI 표시 (모바일 친화적 - 세로 배치 + 박스)
+            # UI 표시 (3-Track 전략)
             st.info(status_msg)
             
-            col_sc1, col_sc2 = st.columns(2)
+            col_sc1, col_sc2, col_sc3 = st.columns(3)
             
             with col_sc1:
                 st.markdown(f"""
-                <div style="background-color:rgba(0,255,0,0.1); padding:10px; border-radius:10px;">
-                    <strong>📉 눌림목 전략</strong><br>
-                    목표 매수가: <strong>{pullback_price:,.0f}원</strong><br>
-                    <span style="font-size:0.8em; color:gray;">(MA20 부근)</span><br>
+                <div style="background-color:rgba(0,255,0,0.1); padding:10px; border-radius:10px; height:100%;">
+                    <strong>📉 기본 눌림목</strong><br>
+                    목표: <strong>{pullback_price:,.0f}원</strong><br>
+                    <span style="font-size:0.8em; color:gray;">(MA20 지지)</span><br>
                     <span style="font-size:0.8em;">리스크: {risk_pullback:.1f}%</span>
                 </div>
                 """, unsafe_allow_html=True)
                 
             with col_sc2:
                 st.markdown(f"""
-                <div style="background-color:rgba(255,0,0,0.1); padding:10px; border-radius:10px;">
-                    <strong>🚀 돌파 전략</strong><br>
-                    목표 매수가: <strong>{breakout_price:,.0f}원</strong><br>
-                    <span style="font-size:0.8em; color:gray;">(BB상단 돌파)</span><br>
+                <div style="background-color:rgba(255,0,0,0.1); padding:10px; border-radius:10px; height:100%;">
+                    <strong>🚀 기본 돌파</strong><br>
+                    목표: <strong>{breakout_price:,.0f}원</strong><br>
+                    <span style="font-size:0.8em; color:gray;">(BB 상단)</span><br>
                     <span style="font-size:0.8em;">리스크: {risk_breakout:.1f}%</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            with col_sc3:
+                # 오닐 전략 스타일 (활성화 여부에 따라 다르게)
+                bg_color = "rgba(0,0,255,0.1)" if oneil_price > 0 else "rgba(128,128,128,0.1)"
+                price_disp = f"{oneil_price:,.0f}원" if oneil_price > 0 else "-"
+                risk_disp = f"리스크: {oneil_risk:.1f}%" if oneil_price > 0 else oneil_msg
+                
+                st.markdown(f"""
+                <div style="background-color:{bg_color}; padding:10px; border-radius:10px; height:100%;">
+                    <strong>💎 오닐/미너비니</strong><br>
+                    목표: <strong>{price_disp}</strong><br>
+                    <span style="font-size:0.8em; color:gray;">({oneil_setup_name})</span><br>
+                    <span style="font-size:0.8em;">{risk_disp}</span>
                 </div>
                 """, unsafe_allow_html=True)
 
