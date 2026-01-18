@@ -30,3 +30,23 @@ news:
   max_keywords: 8
   naver_client_id: ""
   naver_client_secret: ""
+
+# 점수 가중치 (총 100점)
+scoring:
+  trend_weight: 25       # 추세 점수 (MA 정렬, ADX)
+  pattern_weight: 30     # 패턴/타이밍 점수 (재돌파, VCP 특성)
+  volume_weight: 20      # 거래량 점수 (돌파 시 거래량, 건조)
+  supply_weight: 15      # 수급 점수 (외국인/기관)
+  risk_weight: 10        # 리스크 점수 (손절거리 패널티)
+
+# 수급 데이터 설정
+investor:
+  consecutive_buy_days: 3     # 외국인 연속 매수 최소 일수
+  net_buy_threshold: 1000000  # 순매수 최소값 (백만원 단위)
+  top_candidates: 100         # 수급 조회 대상 후보군 수
+
+# 거래량 건조 설정
+volume_dryup:
+  threshold_pct: 0.5          # 평균 대비 50% 이하면 건조
+  lookback_days: 10           # 최근 N일 중 건조일 체크
+  min_dryup_days: 3           # 최소 건조일 수
