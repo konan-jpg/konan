@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import glob
 import os
+import requests
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -13,6 +14,52 @@ from scanner_core import calculate_signals, score_stock
 from image_analysis import analyze_chart_image
 
 st.set_page_config(layout="wide", page_title="추세추종 스캐너")
+
+def get_investor_data_realtime(code):
+    """실시간 수급 데이터 조회 (네이버 금융)"""
+    try:
+        code = str(code).zfill(6)
+        url = f"https://finance.naver.com/item/frgn.naver?code={code}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        r = requests.get(url, headers=headers, timeout=5)
+        dfs = pd.read_html(r.text, encoding='cp949')
+        
+        target_df = None
+        for df in dfs:
+            if '외국인' in str(df.columns): target_df = df; break
+        if target_df is None and len(dfs) >= 2: target_df = dfs[1]
+        
+        if target_df is not None:
+            df = target_df.dropna(how='all').head(10)
+            f_con, f_net, i_net = 0, 0, 0
+            
+            # 컬럼 찾기
+            cols = [str(c).lower() for c in df.columns]
+            f_col = next((i for i, c in enumerate(cols) if '외국인' in c), -1)
+            i_col = next((i for i, c in enumerate(cols) if '기관' in c), -1)
+            p_col = next((i for i, c in enumerate(cols) if '종가' in c), -1)
+            
+            if f_col != -1 and i_col != -1:
+                counting = True
+                for _, row in df.iterrows():
+                    try:
+                        price = float(str(row.iloc[p_col]).replace(',', '')) if p_col != -1 else 1
+                        f_val = float(str(row.iloc[f_col]).replace(',', ''))
+                        i_val = float(str(row.iloc[i_col]).replace(',', ''))
+                        
+                        f_net += f_val * price
+                        i_net += i_val * price
+                        
+                        if counting and f_val > 0: f_con += 1
+                        else: counting = False
+                    except: continue
+                return {
+                    'foreign_consecutive_buy': f_con,
+                    'inst_net_buy_5d': i_net,
+                    'foreign_net_buy_5d': f_net
+                }
+    except: pass
+    return {'foreign_consecutive_buy': 0, 'inst_net_buy_5d': 0, 'foreign_net_buy_5d': 0}
 
 @st.cache_data(ttl=300)
 def load_config():
@@ -367,32 +414,42 @@ if mode == "📊 시장 스캐너":
         
         st.subheader(f"🏆 고득점 종목 Top {len(filtered)}")
         
-        display_cols = ['name', 'sector', 'close', 'total_score', 'setup', 'trend_score', 'pattern_score', 'volume_score', 'supply_score']
-        # 컬럼 존재 여부 확인 후 필터링
-        display_cols = [c for c in display_cols if c in filtered.columns]
-        
-        show_df = filtered[display_cols].rename(columns={
-            'name':'종목명', 'sector':'업종', 'close':'현재가', 
-            'total_score':'총점', 'setup':'셋업', 
-            'trend_score':'추세', 'pattern_score':'위치', 
-            'volume_score':'거래량', 'supply_score':'수급'
-        })
-        
-        # 선택 기능
-        event = st.dataframe(
-            show_df.style.background_gradient(subset=['총점'], cmap='Blues'),
-            use_container_width=True, 
-            height=500,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row"
-        )
-        
-        if event.selection and len(event.selection.rows) > 0:
-            idx = event.selection.rows[0]
-            selected_code = filtered.iloc[idx]['code']
-            row = filtered.iloc[idx]
-            display_stock_report(row, sector_df)
+    display_cols = ['name', 'sector', 'close', 'total_score', 'setup', 'trend_score', 'pattern_score', 'volume_score', 'supply_score']
+    # 컬럼 존재 여부 확인 후 필터링
+    display_cols = [c for c in display_cols if c in filtered.columns]
+    
+    show_df = filtered[display_cols].rename(columns={
+        'name':'종목명', 'sector':'업종', 'close':'현재가', 
+        'total_score':'총점', 'setup':'셋업', 
+        'trend_score':'추세', 'pattern_score':'위치', 
+        'volume_score':'거래량', 'supply_score':'수급'
+    })
+    
+    # 소수점 제거 포맷팅
+    format_dict = {
+        '현재가': '{:,.0f}',
+        '총점': '{:.0f}',
+        '추세': '{:.0f}',
+        '위치': '{:.0f}',
+        '거래량': '{:.0f}',
+        '수급': '{:.0f}'
+    }
+    
+    # 선택 기능
+    event = st.dataframe(
+        show_df.style.format(format_dict, na_rep="-").background_gradient(subset=['총점'], cmap='Blues'),
+        use_container_width=True, 
+        height=500,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row"
+    )
+    
+    if event.selection and len(event.selection.rows) > 0:
+        idx = event.selection.rows[0]
+        selected_code = filtered.iloc[idx]['code']
+        row = filtered.iloc[idx]
+        display_stock_report(row, sector_df)
 
 elif mode == "🔍 종목 상세 진단":
     st.title("🔍 실시간 종목 상세 진단")
@@ -409,16 +466,19 @@ elif mode == "🔍 종목 상세 진단":
 
     if selected_option:
         name = selected_option.split(' (')[0]
-        code = selected_option.split(' (')[1][:-1]
+        code = str(selected_option.split(' (')[1][:-1]).zfill(6)
         
         rs_3m = st.number_input("3개월 RS 점수 (선택사항, 0~99)", 0, 99, 0)
         rs_6m = st.number_input("6개월 RS 점수 (선택사항, 0~99)", 0, 99, 0)
         
         if st.button("🚀 진단 시작"):
-            with st.spinner(f"{name} 데이터를 분석 중입니다..."):
-                # 수급 데이터 로컬에서 찾기
-                inv_data = {}
+            with st.spinner(f"{name} ({code}) 데이터를 분석 중입니다..."):
+                # 수급 데이터 로딩 (스캔 데이터 확인 -> 없으면 실시간 크롤링)
+                inv_data = {'foreign_consecutive_buy': 0, 'inst_net_buy_5d': 0, 'foreign_net_buy_5d': 0}
+                
                 df_scan, sector_df, _ = load_data()
+                data_found = False
+                
                 if df_scan is not None:
                     match = df_scan[df_scan['code'] == code]
                     if not match.empty:
@@ -428,6 +488,14 @@ elif mode == "🔍 종목 상세 진단":
                             'inst_net_buy_5d': r.get('inst_net_5d', 0),
                             'foreign_net_buy_5d': r.get('foreign_net_5d', 0)
                         }
+                        if inv_data['inst_net_buy_5d'] != 0 or inv_data['foreign_net_buy_5d'] != 0:
+                            data_found = True
+
+                # 스캔 데이터에 없거나 수급이 0이면 실시간 크롤링 시도
+                if not data_found:
+                    realtime_inv = get_investor_data_realtime(code)
+                    if realtime_inv['inst_net_buy_5d'] != 0 or realtime_inv['foreign_net_buy_5d'] != 0:
+                        inv_data = realtime_inv
                 
                 # 데이터 가져오기
                 df_stock = fdr.DataReader(code, datetime.now()-timedelta(days=400), datetime.now())
@@ -441,7 +509,7 @@ elif mode == "🔍 종목 상세 진단":
                         row = pd.Series(result)
                         row['name'] = name
                         row['code'] = code
-                        # 섹터 정보는 별도로 못 가져오므로 스캔 데이터 있으면 거기서, 없으면 '기타'
+                        # 섹터 정보
                         row['sector'] = '기타' 
                         if df_scan is not None and not match.empty:
                             row['sector'] = match.iloc[0].get('sector', '기타')
