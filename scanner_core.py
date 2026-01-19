@@ -69,7 +69,7 @@ def calculate_signals(df, cfg):
     climax_high, climax_low, is_climax = find_climax_bar(df, mult=climax_mult)
     
     # Door Knock: BB상단의 95%~102%
-    door_knock = (close >= upper * 0.95) & (close <= upper * 1.05)
+    door_knock = (close >= upper * 0.95) & (close <= upper * 1.02)
     
     # Squeeze: 밴드폭 하위 20%
     squeeze = bbw_pct <= 20
@@ -168,14 +168,20 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     vol_ratio = vol / vol_ma20 if vol_ma20 > 0 else 0
     vol_confirm = safe_bool(sig["vol_confirm"], last)
     
+    # 과거 대량거래 (5점)
     if sig["vol_explosion"].tail(60).any(): volume_score += 5
+    
+    # 거래량 수축 (7점)
     dryup_count = safe_get(sig["vol_dryup_count"], last, 0)
     if dryup_count >= 5: volume_score += 7
     elif dryup_count >= 3: volume_score += 5
+    elif dryup_count >= 1: volume_score += 3
     
-    if vol_confirm: volume_score += 5
-    elif 1.2 <= vol_ratio < 2.0: volume_score += 3
-    elif vol_ratio >= 2.0: volume_score += 5
+    # 당일 거래량 (8점)
+    if vol_confirm: volume_score += 8
+    elif 1.2 <= vol_ratio < 2.0: volume_score += 5
+    elif vol_ratio >= 1.0: volume_score += 3
+    
     volume_score = min(volume_score, 20)
     
     # 4. 수급 점수 (15점)
