@@ -73,16 +73,10 @@ def load_config():
 def load_data():
     df, filename = None, None
     
-    # 디버그 정보
-    import os
-    st.sidebar.write("📁 CWD:", os.getcwd())
-    
-    # 1. 파일 목록 확인
-    merged_files = [f for f in glob.glob("data/scanner_output*.csv") if "chunk" not in f]
+    # 1. 파일 목록 확인 (latest 파일 제외 - 날짜 비교 문제 방지)
+    merged_files = [f for f in glob.glob("data/scanner_output*.csv") 
+                    if "chunk" not in f and "latest" not in f]
     chunk_files = glob.glob("data/partial/scanner_output*chunk*.csv")
-    
-    st.sidebar.write("📄 Merged:", merged_files[-2:] if len(merged_files) > 2 else merged_files)
-    st.sidebar.write("📄 Chunks:", chunk_files[-4:] if len(chunk_files) > 4 else chunk_files)
     
     # 날짜 추출 헬퍼
     def get_date_from_filename(fn):
@@ -93,7 +87,10 @@ def load_data():
             date_str = parts[0]
             # .csv 제거
             if date_str.endswith('.csv'): date_str = date_str.replace('.csv', '')
-            return date_str
+            # 날짜 형식 검증 (YYYY-MM-DD)
+            if len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
+                return date_str
+            return '0000-00-00'
         except: return '0000-00-00'
 
     # 최신 날짜 찾기
@@ -108,11 +105,7 @@ def load_data():
         latest_chunk_file = max(chunk_files, key=get_date_from_filename)
         latest_chunk_date = get_date_from_filename(latest_chunk_file)
     
-    st.sidebar.write("🗓️ Merged날짜:", latest_merged_date)
-    st.sidebar.write("🗓️ Chunk날짜:", latest_chunk_date)
-    
     # 로딩 로직: 청크가 더 최신이거나 같으면 청크 사용 (방금 수집된 데이터 우선)
-    # 날짜 문자열 비교 (YYYY-MM-DD 형식이므로 문자열 비교 가능)
     if latest_chunk_date >= latest_merged_date and latest_chunk_date != '0000-00-00':
         try:
             target_chunks = [f for f in chunk_files if latest_chunk_date in os.path.basename(f)]
