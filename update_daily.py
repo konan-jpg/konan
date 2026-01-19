@@ -150,13 +150,21 @@ def get_investor_data(code, days=10, max_retries=3):
     return {"foreign_consecutive_buy": 0, "foreign_net_buy_5d": 0.0, "inst_net_buy_5d": 0.0}
 
 
+def get_kst_now():
+    """한국 시간(KST) 반환"""
+    return datetime.utcnow() + timedelta(hours=9)
+
 def calculate_sector_rankings(stocks, top_n=500):
     print(f"\n[SECTOR] 섹터 분석 시작...")
     try:
         universe = stocks.head(top_n).copy()
         sector_groups = universe.groupby("Sector")
         sector_results = []
-        end_date, start_date = datetime.now(), datetime.now() - timedelta(days=90)
+        # KST 기준 시간 설정
+        now = get_kst_now()
+        end_date = now + timedelta(days=1)
+        start_date = now - timedelta(days=90)
+        
         for sector, group in sector_groups:
             if len(group) < 3: continue
             returns = []
@@ -196,7 +204,12 @@ def main():
     
     print("\n[STEP1] 기술적 스캔...")
     tech_results = []
-    end, start = datetime.now(), datetime.now() - timedelta(days=400)
+    
+    # KST 기준 시간 설정
+    now = get_kst_now()
+    end = now + timedelta(days=1) # 내일까지로 설정하여 당일 데이터 포함 보장
+    start = now - timedelta(days=400)
+    
     for idx, row in enumerate(chunk_stocks.itertuples(index=False), start=1):
         code = str(getattr(row, "Code", "")).zfill(6)
         name = getattr(row, "Name", "")
@@ -218,7 +231,7 @@ def main():
         except: continue
     print(f"[STEP1] {len(tech_results)}개 통과")
     if not tech_results:
-        scan_day = datetime.now().strftime("%Y-%m-%d")
+        scan_day = get_kst_now().strftime("%Y-%m-%d")
         os.makedirs("data/partial", exist_ok=True)
         pd.DataFrame().to_csv(f"data/partial/scanner_output_{scan_day}_chunk{chunk}.csv", index=False)
         return
@@ -247,7 +260,7 @@ def main():
             "foreign_consec_buy": fc,
             "foreign_net_5d": inv.get("foreign_net_buy_5d", 0),
             "inst_net_5d": inv.get("inst_net_buy_5d", 0),
-            "scan_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "scan_date": get_kst_now().strftime("%Y-%m-%d %H:%M"),
             "chunk": chunk
         })
         news = analyze_stock_news(name, cfg)
@@ -256,7 +269,7 @@ def main():
         print(f"  [OK] {name}: {new_total:.0f}점 (수급:{supply_score})")
         time.sleep(0.2)
     print(f"\n[STEP2] {len(final_results)}개 완료")
-    scan_day = datetime.now().strftime("%Y-%m-%d")
+    scan_day = get_kst_now().strftime("%Y-%m-%d")
     os.makedirs("data/partial", exist_ok=True)
     out = pd.DataFrame(final_results).sort_values("total_score", ascending=False)
     out.insert(0, "rank", range(1, len(out) + 1))
