@@ -32,7 +32,9 @@ jobs:
           pip install -r requirements.txt
       
       - name: Clean stale partials
-        run: rm -f data/partial/*.csv
+        run: |
+          rm -rf data/partial
+          mkdir -p data/partial
 
       - name: Run scanner (chunk ${{ matrix.chunk }})
         env:
@@ -43,10 +45,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: partial-chunk-${{ matrix.chunk }}
-          path: |
-            data/partial/
-            data/sector_rankings.csv
+          path: data/partial/*.csv
           if-no-files-found: warn
+          retention-days: 1
+      
+      - name: Upload sector rankings
+        uses: actions/upload-artifact@v4
+        with:
+          name: sector-rankings-${{ matrix.chunk }}
+          path: data/sector_rankings.csv
+          if-no-files-found: ignore
           retention-days: 1
 
   merge:
@@ -66,21 +74,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas
       
-      - name: Download all partial results
+      - name: Clean and prepare directories
+        run: |
+          rm -rf data/partial
+          mkdir -p data/partial
+      
+      - name: Download chunk artifacts
         uses: actions/download-artifact@v4
         with:
-          path: data/partial
+          path: artifacts
           pattern: partial-chunk-*
           merge-multiple: true
       
-      - name: Move sector rankings to correct location
+      - name: Download sector rankings
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: sector-rankings-*
+          merge-multiple: true
+        continue-on-error: true
+      
+      - name: Move files to correct locations
         run: |
-          if [ -f data/partial/sector_rankings.csv ]; then
-            mv data/partial/sector_rankings.csv data/sector_rankings.csv
-            echo "✅ Moved sector_rankings.csv to data/"
-          else
-            echo "⚠️ sector_rankings.csv not found in artifacts"
-          fi
+          echo "📂 Downloaded artifacts:"
+          find artifacts -type f -name "*.csv" | head -20
+          
+          # Move chunk files to data/partial/
+          find artifacts -name "scanner_output_*chunk*.csv" -exec mv {} data/partial/ \;
+          
+          # Move sector rankings to data/
+          find artifacts -name "sector_rankings.csv" -exec mv {} data/sector_rankings.csv \; 2>/dev/null || true
+          
+          echo "📂 Files in data/partial/:"
+          ls -la data/partial/ || echo "Empty"
+          
+          rm -rf artifacts
       
       - name: Merge chunks
         run: python merge_chunks.py
