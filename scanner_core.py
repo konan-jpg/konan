@@ -131,17 +131,26 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     adx_val = safe_get(sig["adx"], last, 0)
     vol_ma20 = safe_get(sig["vol_ma20"], last, 1)
     
+    # 상세 점수 기록용
+    details = {}
+
     # 1. 추세 점수 (25점)
     trend_score = 0
-    if close > ma20: trend_score += 5
-    if close > ma50: trend_score += 5
-    if close > ma200: trend_score += 5
-    if ma20 > ma50: trend_score += 3
-    if ma50 > ma200: trend_score += 2
-    if adx_val >= 40: trend_score += 5
-    elif adx_val >= 30: trend_score += 4
-    elif adx_val >= 25: trend_score += 3
-    elif adx_val >= 20: trend_score += 2
+    if close > ma20: trend_score += 5; details['trend_ma20'] = 5
+    if close > ma50: trend_score += 5; details['trend_ma50'] = 5
+    if close > ma200: trend_score += 5; details['trend_ma200'] = 5
+    if ma20 > ma50: trend_score += 3; details['trend_align_20_50'] = 3
+    if ma50 > ma200: trend_score += 2; details['trend_align_50_200'] = 2
+    
+    adx_score = 0
+    if adx_val >= 40: adx_score = 5
+    elif adx_val >= 30: adx_score = 4
+    elif adx_val >= 25: adx_score = 3
+    elif adx_val >= 20: adx_score = 2
+    if adx_score > 0:
+        trend_score += adx_score
+        details['trend_adx'] = adx_score
+        
     trend_score = min(trend_score, 25)
     
     # 2. 위치/패턴 점수 (30점)
@@ -152,15 +161,21 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     setup_b = safe_bool(sig["setup_b"], last)
     setup_c = safe_bool(sig.get("setup_c", pd.Series([False])), last)
     
-    if door_knock: pattern_score += 10
-    if squeeze: pattern_score += 10
-    if setup_b: pattern_score += 5
-    elif setup_a: pattern_score += 4
-    elif setup_c: pattern_score += 3
+    if door_knock: pattern_score += 10; details['pat_door_knock'] = 10
+    if squeeze: pattern_score += 10; details['pat_squeeze'] = 10
+    
+    setup_pts = 0
+    if setup_b: setup_pts = 5; details['pat_setup_b'] = 5
+    elif setup_a: setup_pts = 4; details['pat_setup_a'] = 4
+    elif setup_c: setup_pts = 3; details['pat_setup_c'] = 3
+    pattern_score += setup_pts
     
     # RS 가산점
-    if rs_3m >= 80: pattern_score += 5
-    if rs_6m >= 80: pattern_score += 5
+    rs_pts = 0
+    if rs_3m >= 80: rs_pts += 5; details['pat_rs_3m'] = 5
+    if rs_6m >= 80: rs_pts += 5; details['pat_rs_6m'] = 5
+    pattern_score += rs_pts
+    
     pattern_score = min(pattern_score, 30)
     
     # 3. 거래량 점수 (20점)
@@ -169,18 +184,28 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     vol_confirm = safe_bool(sig["vol_confirm"], last)
     
     # 과거 대량거래 (5점)
-    if sig["vol_explosion"].tail(60).any(): volume_score += 5
+    if sig["vol_explosion"].tail(60).any(): 
+        volume_score += 5
+        details['vol_explosion'] = 5
     
     # 거래량 수축 (7점)
     dryup_count = safe_get(sig["vol_dryup_count"], last, 0)
-    if dryup_count >= 5: volume_score += 7
-    elif dryup_count >= 3: volume_score += 5
-    elif dryup_count >= 1: volume_score += 3
+    dryup_pts = 0
+    if dryup_count >= 5: dryup_pts = 7
+    elif dryup_count >= 3: dryup_pts = 5
+    elif dryup_count >= 1: dryup_pts = 3
+    if dryup_pts > 0:
+        volume_score += dryup_pts
+        details['vol_dryup'] = dryup_pts
     
     # 당일 거래량 (8점)
-    if vol_confirm: volume_score += 8
-    elif 1.2 <= vol_ratio < 2.0: volume_score += 5
-    elif vol_ratio >= 1.0: volume_score += 3
+    vol_today_pts = 0
+    if vol_confirm: vol_today_pts = 8
+    elif 1.2 <= vol_ratio < 2.0: vol_today_pts = 5
+    elif vol_ratio >= 1.0: vol_today_pts = 3
+    if vol_today_pts > 0:
+        volume_score += vol_today_pts
+        details['vol_today'] = vol_today_pts
     
     volume_score = min(volume_score, 20)
     
@@ -188,11 +213,21 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     supply_score = 0
     if investor_data:
         fc = investor_data.get("foreign_consecutive_buy", 0)
-        if fc >= 5: supply_score += 8
-        elif fc >= 3: supply_score += 5
-        elif fc >= 1: supply_score += 2
-        if investor_data.get("inst_net_buy_5d", 0) > 0: supply_score += 4
-        if investor_data.get("foreign_net_buy_5d", 0) > 0: supply_score += 3
+        f_pts = 0
+        if fc >= 5: f_pts = 8
+        elif fc >= 3: f_pts = 5
+        elif fc >= 1: f_pts = 2
+        if f_pts > 0:
+            supply_score += f_pts
+            details['sup_foreign_consec'] = f_pts
+            
+        if investor_data.get("inst_net_buy_5d", 0) > 0: 
+            supply_score += 4
+            details['sup_inst_net'] = 4
+        if investor_data.get("foreign_net_buy_5d", 0) > 0: 
+            supply_score += 3
+            details['sup_foreign_net'] = 3
+            
     supply_score = min(supply_score, 15)
     
     # 5. 리스크 점수 (10점)
@@ -206,9 +241,16 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     if risk_pct <= 0 or risk_pct > 0.15:
         risk_pct = 0.08
         stop = close * 0.92
-    if risk_pct > 0.10: risk_score -= 5
-    elif risk_pct > 0.08: risk_score -= 3
-    elif risk_pct > 0.05: risk_score -= 1
+        
+    deduction = 0
+    if risk_pct > 0.10: deduction = 5
+    elif risk_pct > 0.08: deduction = 3
+    elif risk_pct > 0.05: deduction = 1
+    
+    risk_score -= deduction
+    if deduction > 0: details['risk_deduction'] = -deduction
+    else: details['risk_safe'] = 10
+    
     risk_score = max(0, risk_score)
     
     total_score = trend_score + pattern_score + volume_score + supply_score + risk_score
@@ -234,6 +276,5 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
         "ma20": ma20, "ma60": ma50,
         "bb_upper": safe_get(sig["upper"], last, close),
         "door_knock": door_knock, "squeeze": squeeze,
-        "trigger_score": float(pattern_score),
-        "liq_score": float(volume_score),
+        "score_details": details
     }
