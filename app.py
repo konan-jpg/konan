@@ -1,307 +1,233 @@
 # -*- coding: utf-8 -*-
-import streamlit as st
+import numpy as np
 import pandas as pd
-import glob
-import os
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from news_analyzer import search_naver_news
-import FinanceDataReader as fdr
-import yaml
-from scanner_core import calculate_signals, score_stock
-from image_analysis import analyze_chart_image
 
-st.set_page_config(layout="wide", page_title="추세추종 스캐너")
+def bollinger_bands(close, n=20, k=2.0):
+    mid = close.rolling(n).mean()
+    sd = close.rolling(n).std(ddof=0)
+    upper = mid + k * sd
+    lower = mid - k * sd
+    return mid, upper, lower
 
-@st.cache_data(ttl=300)
-def load_config():
-    cfg_path = "config.yaml"
-    if os.path.exists(cfg_path):
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    return {}
+def bandwidth(mid, upper, lower):
+    return (upper - lower) / mid.replace(0, np.nan)
 
-@st.cache_data(ttl=300)
-def load_data():
-    df = None
-    filename = None
-    merged_files = glob.glob("data/scanner_output*.csv")
-    merged_files = [f for f in merged_files if "chunk" not in f]
-    if merged_files:
-        def extract_date(fn):
-            try:
-                parts = os.path.basename(fn).replace('.csv', '').split('_')
-                if len(parts) >= 3: return parts[-1]
-                return '0000-00-00'
-            except: return '0000-00-00'
-        latest_file = max(merged_files, key=extract_date)
-        df = pd.read_csv(latest_file, dtype={'code': str})
-        filename = os.path.basename(latest_file)
-    else:
-        chunk_files = glob.glob("data/partial/scanner_output*chunk*.csv")
-        if chunk_files:
-            df_list = []
-            for f in sorted(chunk_files):
-                try:
-                    sub_df = pd.read_csv(f, dtype={'code': str})
-                    df_list.append(sub_df)
-                except: continue
-            if df_list:
-                df = pd.concat(df_list, ignore_index=True)
-                if 'code' in df.columns:
-                    df.drop_duplicates(subset=['code'], keep='first', inplace=True)
-                filename = f"Merged from {len(df_list)} chunks"
-    sector_df = None
-    if os.path.exists("data/sector_rankings.csv"):
-        sector_df = pd.read_csv("data/sector_rankings.csv")
-    return df, sector_df, filename
+def percentile_rank(s, lookback):
+    def pct(x):
+        if len(x) < 2: return np.nan
+        return 100.0 * (np.sum(x <= x[-1]) - 1) / (len(x) - 1)
+    return s.rolling(lookback).apply(pct, raw=True)
 
-@st.cache_data
-def get_krx_codes():
-    try:
-        df = fdr.StockListing("KRX")
-        if df is None or df.empty: raise ValueError("Empty")
-        return df[['Code', 'Name']]
-    except:
+def adx(high, low, close, n=14):
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(n).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=high.index).rolling(n).mean() / atr
+    minus_di = 100 * pd.Series(minus_dm, index=high.index).rolling(n).mean() / atr
+    denom = (plus_di + minus_di).replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / denom
+    return dx.rolling(n).mean()
+
+def find_climax_bar(df, vol_col="Volume", mult=5.0):
+    vol = df[vol_col]
+    vol_avg20 = vol.rolling(20).mean()
+    is_climax = vol >= (mult * vol_avg20)
+    climax_high = df["High"].where(is_climax).ffill()
+    climax_low = df["Low"].where(is_climax).ffill()
+    return climax_high, climax_low, is_climax
+
+def calculate_signals(df, cfg):
+    if df is None or len(df) < 60:
+        return None
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    vol = df["Volume"]
+    
+    n = cfg.get("bollinger", {}).get("length", 60)
+    k = cfg.get("bollinger", {}).get("stdev", 2)
+    mid, upper, lower = bollinger_bands(close, n=n, k=k)
+    bbw = bandwidth(mid, upper, lower)
+    lookback = cfg.get("bollinger", {}).get("bandwidth_lookback", 60)
+    bbw_pct = percentile_rank(bbw, lookback)
+    adx_len = cfg.get("trend", {}).get("adx_len", 14)
+    adx_val = adx(high, low, close, n=adx_len)
+    
+    ma20 = close.rolling(20).mean()
+    ma50 = close.rolling(50).mean()
+    ma200 = close.rolling(200).mean()
+    vol_ma20 = vol.rolling(20).mean()
+    
+    climax_mult = cfg.get("volume", {}).get("climax_mult", 5.0)
+    climax_high, climax_low, is_climax = find_climax_bar(df, mult=climax_mult)
+    
+    # Door Knock: BB상단의 95%~102%
+    door_knock = (close >= upper * 0.95) & (close <= upper * 1.02)
+    
+    # Squeeze: 밴드폭 하위 20%
+    squeeze = bbw_pct <= 20
+    
+    # 거래량 관련
+    vol_confirm_mult = cfg.get("volume", {}).get("vol_confirm_mult", 1.5)
+    vol_confirm = vol >= vol_confirm_mult * vol_ma20
+    vol_explosion = vol >= vol_ma20 * 3
+    vol_dryup = vol < vol_ma20 * 0.7
+    vol_dryup_count = vol_dryup.rolling(15).sum()
+    
+    # Setup 정의
+    adx_min = cfg.get("trend", {}).get("adx_min", 20)
+    adx_ok = adx_val >= adx_min
+    breakout_60 = close > upper
+    setup_a = squeeze & breakout_60 & vol_confirm & adx_ok
+    setup_b = (climax_high.notna()) & (close > climax_high) & vol_confirm
+    ma20_crossover = (close > ma20) & (close.shift(1) <= ma20.shift(1))
+    setup_c = ma20_crossover & vol_confirm & adx_ok
+    
+    return {
+        "upper": upper, "lower": lower, "mid": mid,
+        "bbw_pct": bbw_pct, "adx": adx_val,
+        "ma20": ma20, "ma50": ma50, "ma200": ma200,
+        "vol_ma20": vol_ma20, "vol_confirm": vol_confirm,
+        "climax_high": climax_high, "climax_low": climax_low, "is_climax": is_climax,
+        "door_knock": door_knock, "squeeze": squeeze,
+        "vol_explosion": vol_explosion, "vol_dryup_count": vol_dryup_count,
+        "setup_a": setup_a, "setup_b": setup_b, "setup_c": setup_c,
+    }
+
+def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0):
+    """
+    종합 점수 계산 (100점 만점)
+    - 추세: 25점, 위치: 30점, 거래량: 20점, 수급: 15점, 리스크: 10점
+    """
+    if sig is None:
+        return None
+    
+    last = df.index[-1]
+    close = float(df.loc[last, "Close"])
+    vol = float(df.loc[last, "Volume"])
+    
+    def safe_get(series, idx, default=0):
         try:
-            if os.path.exists("data/krx_tickers.csv"):
-                return pd.read_csv("data/krx_tickers.csv", dtype={'Code': str})[['Code', 'Name']]
-        except: pass
-        df_scan, _, _ = load_data()
-        if df_scan is not None and not df_scan.empty:
-            return df_scan[['code', 'name']].rename(columns={'code': 'Code', 'name': 'Name'}).drop_duplicates()
-        return pd.DataFrame({'Code':[], 'Name':[]})
-
-def get_setup_explanations():
+            val = series.loc[idx]
+            return float(val) if pd.notna(val) else default
+        except: return default
+    
+    def safe_bool(series, idx):
+        try:
+            val = series.loc[idx]
+            return bool(val) if pd.notna(val) else False
+        except: return False
+    
+    ma20 = safe_get(sig["ma20"], last, close)
+    ma50 = safe_get(sig["ma50"], last, close)
+    ma200 = safe_get(sig["ma200"], last, close)
+    adx_val = safe_get(sig["adx"], last, 0)
+    vol_ma20 = safe_get(sig["vol_ma20"], last, 1)
+    
+    # 1. 추세 점수 (25점)
+    trend_score = 0
+    if close > ma20: trend_score += 5
+    if close > ma50: trend_score += 5
+    if close > ma200: trend_score += 5
+    if ma20 > ma50: trend_score += 3
+    if ma50 > ma200: trend_score += 2
+    if adx_val >= 40: trend_score += 5
+    elif adx_val >= 30: trend_score += 4
+    elif adx_val >= 25: trend_score += 3
+    elif adx_val >= 20: trend_score += 2
+    trend_score = min(trend_score, 25)
+    
+    # 2. 위치/패턴 점수 (30점)
+    pattern_score = 0
+    door_knock = safe_bool(sig["door_knock"], last)
+    squeeze = safe_bool(sig["squeeze"], last)
+    setup_a = safe_bool(sig["setup_a"], last)
+    setup_b = safe_bool(sig["setup_b"], last)
+    setup_c = safe_bool(sig.get("setup_c", pd.Series([False])), last)
+    
+    if door_knock: pattern_score += 10
+    if squeeze: pattern_score += 10
+    if setup_b: pattern_score += 5
+    elif setup_a: pattern_score += 4
+    elif setup_c: pattern_score += 3
+    
+    # RS 가산점
+    if rs_3m >= 80: pattern_score += 5
+    if rs_6m >= 80: pattern_score += 5
+    pattern_score = min(pattern_score, 30)
+    
+    # 3. 거래량 점수 (20점)
+    volume_score = 0
+    vol_ratio = vol / vol_ma20 if vol_ma20 > 0 else 0
+    vol_confirm = safe_bool(sig["vol_confirm"], last)
+    
+    if sig["vol_explosion"].tail(60).any(): volume_score += 5
+    dryup_count = safe_get(sig["vol_dryup_count"], last, 0)
+    if dryup_count >= 5: volume_score += 7
+    elif dryup_count >= 3: volume_score += 5
+    
+    if vol_confirm: volume_score += 5
+    elif 1.2 <= vol_ratio < 2.0: volume_score += 3
+    elif vol_ratio >= 2.0: volume_score += 5
+    volume_score = min(volume_score, 20)
+    
+    # 4. 수급 점수 (15점)
+    supply_score = 0
+    if investor_data:
+        fc = investor_data.get("foreign_consecutive_buy", 0)
+        if fc >= 5: supply_score += 8
+        elif fc >= 3: supply_score += 5
+        elif fc >= 1: supply_score += 2
+        if investor_data.get("inst_net_buy_5d", 0) > 0: supply_score += 4
+        if investor_data.get("foreign_net_buy_5d", 0) > 0: supply_score += 3
+    supply_score = min(supply_score, 15)
+    
+    # 5. 리스크 점수 (10점)
+    risk_score = 10
+    if setup_b and pd.notna(sig["climax_low"].loc[last]):
+        stop = float(sig["climax_low"].loc[last])
+    else:
+        stop = float(df["Low"].tail(10).min())
+    if stop <= 0: stop = close * 0.92
+    risk_pct = (close - stop) / close
+    if risk_pct <= 0 or risk_pct > 0.15:
+        risk_pct = 0.08
+        stop = close * 0.92
+    if risk_pct > 0.10: risk_score -= 5
+    elif risk_pct > 0.08: risk_score -= 3
+    elif risk_pct > 0.05: risk_score -= 1
+    risk_score = max(0, risk_score)
+    
+    total_score = trend_score + pattern_score + volume_score + supply_score + risk_score
+    
+    # 셋업 결정
+    if setup_b: setup = "B"
+    elif setup_a: setup = "A"
+    elif setup_c: setup = "C"
+    elif door_knock and squeeze: setup = "R"
+    else: setup = "-"
+    
     return {
-        'R': "🔥 3조건 충족 - Door Knock + Squeeze + Memory (가장 강력)",
-        'A': "2조건 충족 - Door Knock/Squeeze/Memory 중 2개",
-        'B': "1조건 충족 - Door Knock/Squeeze/Memory 중 1개",
-        '-': "기본 추세 및 유동성 기준만 충족",
+        "close": close, "stop": stop,
+        "trend_score": float(trend_score),
+        "pattern_score": float(pattern_score),
+        "volume_score": float(volume_score),
+        "supply_score": float(supply_score),
+        "risk_score": float(risk_score),
+        "total_score": float(total_score),
+        "risk_pct": float(risk_pct * 100),
+        "bbw_pct": safe_get(sig["bbw_pct"], last, 0),
+        "adx": adx_val, "setup": setup,
+        "ma20": ma20, "ma60": ma50,
+        "bb_upper": safe_get(sig["upper"], last, close),
+        "door_knock": door_knock, "squeeze": squeeze,
+        "trigger_score": float(pattern_score),
+        "liq_score": float(volume_score),
     }
-
-def get_score_explanations():
-    return {
-        'trend_score': {'name': '추세 점수 (25점)', 'description': '이동평균선 정렬과 ADX 추세 강도', 'components': ['현재가 > 20일선: +5점', '현재가 > 50일선: +5점', '현재가 > 200일선: +5점', 'MA 정렬: +5점', 'ADX 강도: +2~5점']},
-        'pattern_score': {'name': '위치 점수 (30점)', 'description': 'Door Knock + Squeeze + Memory + RS', 'components': ['Door Knock (BB상단 95~102%): +10점', 'Squeeze (밴드폭 하위20%): +10점', 'Memory (60일 최대거래량일 종가±5%): +10점', 'RS 80점이상: 각 +5점']},
-        'volume_score': {'name': '거래량 점수 (20점)', 'description': '3단계 거래량 분석', 'components': ['과거 폭발 (3배이상): +5점', '수축 (건조일 3일+): +5~7점', '현재 활성화: +3~8점']},
-        'supply_score': {'name': '수급 점수 (15점)', 'description': '외국인/기관 연속 매수', 'components': ['외국인 연속 매수 5일+: +8점', '외국인 연속 매수 3일+: +5점', '기관 5일 순매수: +4점', '외국인 5일 순매수: +3점']},
-        'risk_score': {'name': '리스크 점수 (10점)', 'description': '손절가 거리 기반', 'components': ['리스크 5% 이하: 10점', '리스크 5~8%: -1점', '리스크 8~10%: -3점', '리스크 10%+: -5점']}
-    }
-
-def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
-    st.markdown("---")
-    st.subheader(f"📊 {row.get('name', 'N/A')} ({row.get('code', '')}) 상세 분석")
-    if rs_3m is not None: st.metric("3개월 RS", f"{rs_3m}")
-    if rs_6m is not None: st.metric("6개월 RS", f"{rs_6m}")
-    stock_sector = row.get('sector', '기타')
-    is_leader = sector_df is not None and stock_sector in sector_df.head(5)['Sector'].tolist()
-    if is_leader: st.success(f"🏆 **주도 섹터**: {stock_sector}")
-    else: st.info(f"📌 **업종**: {stock_sector}")
-    foreign = row.get('foreign_consec_buy', 0)
-    inst_net = row.get('inst_net_5d', 0)
-    risk_pct = row.get('risk_pct', 0)
-    st.markdown(f"""
-    <style>.info-grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}}.info-box{{background:#f0f2f6;padding:8px;border-radius:5px;text-align:center}}.info-label{{font-size:11px;color:#666}}.info-value{{font-size:14px;font-weight:bold}}</style>
-    <div class="info-grid">
-        <div class="info-box"><div class="info-label">현재가</div><div class="info-value">{row['close']:,.0f}원</div></div>
-        <div class="info-box"><div class="info-label">총점</div><div class="info-value">{row['total_score']:.0f}점</div></div>
-        <div class="info-box"><div class="info-label">셋업</div><div class="info-value">{row.get('setup', '-')}</div></div>
-        <div class="info-box"><div class="info-label">리스크</div><div class="info-value">{risk_pct:.1f}%</div></div>
-        <div class="info-box"><div class="info-label">외인연속</div><div class="info-value">{int(foreign)}일</div></div>
-        <div class="info-box"><div class="info-label">기관5일</div><div class="info-value">{inst_net/1e8:,.0f}억</div></div>
-    </div>""", unsafe_allow_html=True)
-    setup_type = row.get('setup', '-')
-    with st.expander(f"ℹ️ 셋업 설명 (현재: {setup_type})", expanded=False):
-        for s, d in get_setup_explanations().items():
-            if s == setup_type: st.success(f"**▶ {s}** (현재): {d}")
-            else: st.write(f"**{s}**: {d}")
-    st.markdown("---")
-    st.markdown("#### 📈 점수 구성 (100점 만점)")
-    rs3_bonus = 5 if rs_3m and rs_3m >= 80 else 0
-    rs6_bonus = 5 if rs_6m and rs_6m >= 80 else 0
-    score_data = {'추세': row.get('trend_score', 0), '위치': row.get('pattern_score', 0), '거래량': row.get('volume_score', 0), '수급': row.get('supply_score', 0), '리스크': row.get('risk_score', 10)}
-    cols = st.columns(6)
-    with cols[0]: st.metric("추세", f"{score_data['추세']:.0f}/25")
-    with cols[1]: st.metric("위치", f"{score_data['위치']:.0f}/30")
-    with cols[2]: st.metric("거래량", f"{score_data['거래량']:.0f}/20")
-    with cols[3]: st.metric("수급", f"{score_data['수급']:.0f}/15")
-    with cols[4]: st.metric("리스크", f"{score_data['리스크']:.0f}/10")
-    with cols[5]: st.metric("RS가산", f"+{rs3_bonus+rs6_bonus}")
-    for key, info in get_score_explanations().items():
-        with st.expander(f"🔹 {info['name']}", expanded=False):
-            st.markdown(f"**{info['description']}**")
-            for c in info['components']: st.write(f"• {c}")
-    if 'foreign_net_5d' in row or 'inst_net_5d' in row:
-        st.markdown("---")
-        st.markdown("#### 💰 수급 현황")
-        c1, c2, c3 = st.columns(3)
-        with c1: st.write(f"**외국인 연속**: {int(row.get('foreign_consec_buy', 0))}일")
-        with c2: st.write(f"**외국인 5일**: {row.get('foreign_net_5d', 0)/1e8:,.1f}억")
-        with c3: st.write(f"**기관 5일**: {row.get('inst_net_5d', 0)/1e8:,.1f}억")
-    st.markdown("---")
-    st.markdown("#### 🎯 매수 전략")
-    try:
-        current_price, ma20 = row['close'], row.get('ma20', row['close'])
-        base_stop = row.get('stop', current_price * 0.92)
-        bb_upper = row.get('bb_upper', current_price * 1.05)
-        c1, c2 = st.columns(2)
-        with c1:
-            pullback_stop = max(ma20 * 0.97, base_stop)
-            st.markdown(f'<div style="background:rgba(0,255,0,0.1);padding:10px;border-radius:10px;"><strong>📉 눌림목</strong><br>진입: {ma20:,.0f}원<br>손절: {pullback_stop:,.0f}원</div>', unsafe_allow_html=True)
-        with c2:
-            breakout_price = bb_upper if bb_upper > current_price else current_price * 1.02
-            st.markdown(f'<div style="background:rgba(255,165,0,0.1);padding:10px;border-radius:10px;"><strong>🚀 돌파</strong><br>진입: {breakout_price:,.0f}원<br>손절: {breakout_price*0.95:,.0f}원</div>', unsafe_allow_html=True)
-        st.caption(f"⚠️ 기본 손절가: {base_stop:,.0f}원")
-    except Exception as e: st.warning(f"전략 계산 오류: {e}")
-    st.markdown("---")
-    st.markdown("#### 📊 기술적 지표")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        if 'ma20' in row and pd.notna(row['ma20']): st.write(f"**20일선**: {row['ma20']:,.0f}원")
-    with c2:
-        if 'ma60' in row and pd.notna(row['ma60']): st.write(f"**60일선**: {row['ma60']:,.0f}원")
-    with c3:
-        if 'adx' in row and pd.notna(row['adx']): st.write(f"**ADX**: {row['adx']:.1f}")
-    with c4:
-        if 'stop' in row and pd.notna(row['stop']): st.write(f"**손절가**: {row['stop']:,.0f}원")
-    st.markdown("---")
-    st.markdown("#### 📉 차트 (6개월)")
-    try:
-        chart_df = fdr.DataReader(row['code'], datetime.now() - timedelta(days=180), datetime.now())
-        if chart_df is not None and len(chart_df) > 0:
-            chart_df['MA20'] = chart_df['Close'].rolling(20).mean()
-            chart_df['MA60'] = chart_df['Close'].rolling(60).mean()
-            mid = chart_df['Close'].rolling(60).mean()
-            std = chart_df['Close'].rolling(60).std()
-            chart_df['BB_Upper'] = mid + 2 * std
-            fig = make_subplots(rows=2, cols=1, row_heights=[0.75, 0.25], vertical_spacing=0.03, shared_xaxes=True)
-            fig.add_trace(go.Candlestick(x=chart_df.index, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'], name='가격', increasing_line_color='red', decreasing_line_color='blue'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['MA20'], mode='lines', name='MA20', line=dict(color='orange', width=1.5)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['MA60'], mode='lines', name='MA60', line=dict(color='purple', width=1.5)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['BB_Upper'], mode='lines', name='BB상단', line=dict(color='gray', width=1, dash='dot')), row=1, col=1)
-            if 'stop' in row and pd.notna(row['stop']):
-                fig.add_trace(go.Scatter(x=[chart_df.index[0], chart_df.index[-1]], y=[row['stop'], row['stop']], mode='lines', name='손절', line=dict(color='red', width=1.5, dash='dash')), row=1, col=1)
-            colors = ['red' if o <= c else 'blue' for o, c in zip(chart_df['Open'], chart_df['Close'])]
-            fig.add_trace(go.Bar(x=chart_df.index, y=chart_df['Volume'], name='거래량', marker_color=colors, opacity=0.5), row=2, col=1)
-            fig.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0), xaxis_rangeslider_visible=False, height=500, margin=dict(l=50, r=50, t=50, b=30))
-            st.plotly_chart(fig, use_container_width=True)
-    except Exception as e: st.warning(f"차트 오류: {e}")
-
-# Main UI
-st.sidebar.title("메뉴")
-mode = st.sidebar.radio("모드 선택", ["🔍 실시간 종목 진단", "📊 당일 시장 스캐너", "🖼️ 차트 이미지 분석"])
-if st.sidebar.button("🔄 새로고침"):
-    st.cache_data.clear()
-    st.rerun()
-
-if mode == "📊 당일 시장 스캐너":
-    min_score = st.slider("최소 점수", 0, 100, 50)
-    df, sector_df, filename = load_data()
-    if df is None: st.error("❌ 데이터 없음"); st.stop()
-    df['code'] = df['code'].astype(str).str.zfill(6)
-    st.success(f"✅ {filename} ({len(df)}개)")
-    st.markdown("### 🧭 섹터 분석")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.info("📊 주도 섹터")
-        if sector_df is not None:
-            top = sector_df[sector_df['Sector'] != '기타'].head(5)[['Sector', 'AvgReturn_3M', 'StockCount']]
-            st.dataframe(top.style.format({'AvgReturn_3M': '{:.1f}%'}), use_container_width=True, hide_index=True)
-    with c2:
-        st.success("🎯 포착 섹터")
-        if 'sector' in df.columns:
-            ss = df[df['sector'] != '기타']['sector'].value_counts().head(5).reset_index()
-            ss.columns = ['Sector', 'Count']
-            st.dataframe(ss, use_container_width=True, hide_index=True)
-    st.markdown("---")
-    if 'total_score' in df.columns: df = df.sort_values('total_score', ascending=False).reset_index(drop=True)
-    filtered = df[df['total_score'] >= min_score].copy()
-    st.subheader(f"🏆 상위 종목 ({len(filtered)}개)")
-    with st.popover("ℹ️ 점수 설명"):
-        st.markdown("**추세(25)** + **위치(30)** + **거래량(20)** + **수급(15)** + **리스크(10)** = 100점")
-    cols = ['name', 'sector', 'close', 'total_score', 'setup', 'trend_score', 'pattern_score', 'volume_score', 'supply_score']
-    cols = [c for c in cols if c in filtered.columns]
-    disp = filtered[cols].copy()
-    disp.insert(0, '순위', range(1, len(disp)+1))
-    disp = disp.rename(columns={'name':'종목명','sector':'업종','close':'현재가','total_score':'총점','setup':'셋업','trend_score':'추세','pattern_score':'위치','volume_score':'거래량','supply_score':'수급'})
-    event = st.dataframe(disp, use_container_width=True, height=400, hide_index=True, on_select="rerun", selection_mode="single-row")
-    if event.selection and len(event.selection.rows) > 0:
-        code = filtered.iloc[event.selection.rows[0]]['code']
-        display_stock_report(df[df['code'] == code].iloc[0], sector_df)
-
-elif mode == "🔍 실시간 종목 진단":
-    st.subheader("🔍 실시간 종목 진단")
-    stock_df = get_krx_codes()
-    name = st.selectbox("종목명", stock_df['Name'])
-    code = stock_df[stock_df['Name'] == name]['Code'].iloc[0]
-    rs_3m = st.number_input("3개월 RS", 0, 100, 0, 1)
-    rs_6m = st.number_input("6개월 RS", 0, 100, 0, 1)
-    inv = {}
-    df_scan, sector_df, _ = load_data()
-    if df_scan is not None:
-        df_scan['code'] = df_scan['code'].astype(str).str.zfill(6)
-        r = df_scan[df_scan['code'] == str(code).zfill(6)]
-        if not r.empty:
-            r = r.iloc[0]
-            inv = {'foreign_consecutive_buy': r.get('foreign_consec_buy', 0), 'inst_net_buy_5d': r.get('inst_net_5d', 0), 'foreign_net_buy_5d': r.get('foreign_net_5d', 0)}
-    df_stock = fdr.DataReader(code, datetime.now() - timedelta(days=365), datetime.now())
-    if df_stock is not None and len(df_stock) > 0:
-        cfg = load_config()
-        sig = calculate_signals(df_stock, cfg)
-        result = score_stock(df_stock, sig, cfg, rs_3m=rs_3m, rs_6m=rs_6m, investor_data=inv if inv else None)
-        if result:
-            row = pd.Series(result)
-            row['name'], row['code'], row['sector'] = name, code, ''
-            if inv:
-                row['foreign_consec_buy'] = inv.get('foreign_consecutive_buy', 0)
-                row['foreign_net_5d'] = inv.get('foreign_net_buy_5d', 0)
-                row['inst_net_5d'] = inv.get('inst_net_buy_5d', 0)
-            display_stock_report(row, sector_df, rs_3m, rs_6m)
-        else: st.error("점수 계산 실패")
-    else: st.error("데이터 없음")
-
-elif mode == "🖼️ 차트 이미지 분석":
-    st.subheader("🖼️ 차트 이미지 분석")
-    uploaded = st.file_uploader("차트 업로드", type=["png","jpg","jpeg"])
-    if uploaded:
-        st.image(uploaded, caption="업로드된 차트", use_column_width=True)
-        from PIL import Image
-        result = analyze_chart_image(Image.open(uploaded))
-        if result:
-            with st.expander("🔍 분석 결과", expanded=True):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**OCR**")
-                    for l in result.get("ocr_text", []): st.caption(f"- {l}")
-                with c2:
-                    st.markdown("**패턴**")
-                    for p in result.get("patterns", []): st.success(f"{p['name']} ({p['confidence']*100:.0f}%)")
-        stock_df = get_krx_codes()
-        name = st.selectbox("종목명", stock_df['Name'], key='img_name')
-        code = stock_df[stock_df['Name'] == name]['Code'].iloc[0]
-        rs_3m = st.number_input("3개월 RS", 0, 100, 0, 1, key='img_rs3')
-        rs_6m = st.number_input("6개월 RS", 0, 100, 0, 1, key='img_rs6')
-        inv = {}
-        df_scan, _, _ = load_data()
-        if df_scan is not None:
-            r = df_scan[df_scan['code'].astype(str).str.zfill(6) == str(code).zfill(6)]
-            if not r.empty:
-                r = r.iloc[0]
-                inv = {'foreign_consecutive_buy': r.get('foreign_consec_buy', 0), 'inst_net_buy_5d': r.get('inst_net_5d', 0), 'foreign_net_buy_5d': r.get('foreign_net_5d', 0)}
-        df_stock = fdr.DataReader(code, datetime.now() - timedelta(days=365), datetime.now())
-        if df_stock is not None and len(df_stock) > 0:
-            cfg = load_config()
-            sig = calculate_signals(df_stock, cfg)
-            result = score_stock(df_stock, sig, cfg, rs_3m=rs_3m, rs_6m=rs_6m, investor_data=inv)
-            if result:
-                row = pd.Series(result)
-                row['name'], row['code'], row['sector'] = name, code, ''
-                if inv:
-                    row['foreign_consec_buy'] = inv.get('foreign_consecutive_buy', 0)
-                    row['foreign_net_5d'] = inv.get('foreign_net_buy_5d', 0)
-                    row['inst_net_5d'] = inv.get('inst_net_buy_5d', 0)
-                display_stock_report(row, None, rs_3m, rs_6m)
-            else: st.error("점수 계산 실패")
-        else: st.error("데이터 없음")
