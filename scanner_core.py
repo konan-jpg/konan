@@ -101,10 +101,11 @@ def calculate_signals(df, cfg):
         "setup_a": setup_a, "setup_b": setup_b, "setup_c": setup_c,
     }
 
-def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0):
+def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0, index_above_ma20=True):
     """
     종합 점수 계산 (100점 만점)
     - 추세: 25점, 위치: 30점, 거래량: 20점, 수급: 15점, 리스크: 10점
+    - index_above_ma20: 지수가 20일선 위에 있으면 True (리스크 감점 적음)
     """
     if sig is None:
         return None
@@ -230,7 +231,7 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
             
     supply_score = min(supply_score, 15)
     
-    # 5. 리스크 점수 (10점)
+    # 5. 리스크 점수 (10점) - 지수 20일선 위/아래에 따라 감점 다르게 적용
     risk_score = 10
     if setup_b and pd.notna(sig["climax_low"].loc[last]):
         stop = float(sig["climax_low"].loc[last])
@@ -241,11 +242,26 @@ def score_stock(df, sig, cfg, mktcap=None, investor_data=None, rs_3m=0, rs_6m=0)
     if risk_pct <= 0 or risk_pct > 0.15:
         risk_pct = 0.08
         stop = close * 0.92
-        
-    deduction = 0
-    if risk_pct > 0.10: deduction = 5
-    elif risk_pct > 0.08: deduction = 3
-    elif risk_pct > 0.05: deduction = 1
+    
+    # 리스크 감점 테이블 (지수 20일선 위/아래)
+    # 지수 아래: 2배 감점 (시장 상황 안좋음)
+    risk_pct_pct = risk_pct * 100  # 0.06 -> 6
+    
+    if index_above_ma20:  # 지수가 20일선 위 (기본)
+        if risk_pct_pct <= 5: deduction = 0      # 10점
+        elif risk_pct_pct <= 6: deduction = 1    # 9점
+        elif risk_pct_pct <= 7: deduction = 2    # 8점
+        elif risk_pct_pct <= 8: deduction = 3    # 7점
+        elif risk_pct_pct <= 9: deduction = 5    # 5점
+        elif risk_pct_pct <= 10: deduction = 7   # 3점
+        elif risk_pct_pct <= 11: deduction = 9   # 1점
+        else: deduction = 10  # 0점 (제외)
+    else:  # 지수가 20일선 아래 (2배 감점)
+        if risk_pct_pct <= 5: deduction = 0      # 10점
+        elif risk_pct_pct <= 6: deduction = 2    # 8점
+        elif risk_pct_pct <= 7: deduction = 4    # 6점
+        elif risk_pct_pct <= 8: deduction = 6    # 4점
+        else: deduction = 10  # 0점 (9% 이상은 제외)
     
     risk_score -= deduction
     if deduction > 0: details['risk_deduction'] = -deduction
