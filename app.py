@@ -217,19 +217,21 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     foreign = int(row.get('foreign_consec_buy', 0))
     inst_net = row.get('inst_net_5d', 0)
     risk_pct = row.get('risk_pct', 0)
+    base_stop = row.get('stop', 0)
     
     st.markdown(f"""
     <style>
-    .info-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }}
+    .info-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }}
     .info-box {{ background: #f0f2f6; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
     .lb {{ font-size: 12px; color: #666; margin-bottom: 5px; }}
     .val {{ font-size: 16px; font-weight: bold; color: #333; }}
     </style>
     <div class="info-grid">
         <div class="info-box"><div class="lb">현재가</div><div class="val">{row['close']:,.0f}원</div></div>
+        <div class="info-box"><div class="lb">기본 손절가</div><div class="val" style="color: red;">{base_stop:,.0f}원</div></div>
+        <div class="info-box"><div class="lb">리스크</div><div class="val" style="color: {'red' if risk_pct > 10 else 'green'};">{risk_pct:.1f}%</div></div>
         <div class="info-box"><div class="lb">총점</div><div class="val" style="color: #2e86de;">{row['total_score']:.0f}점</div></div>
         <div class="info-box"><div class="lb">셋업</div><div class="val">{row.get('setup','-')}</div></div>
-        <div class="info-box"><div class="lb">리스크</div><div class="val" style="color: {'red' if risk_pct > 10 else 'green'};">{risk_pct:.1f}%</div></div>
         <div class="info-box"><div class="lb">외국인 연속</div><div class="val" style="color: {'red' if foreign > 0 else 'black'};">{foreign}일</div></div>
         <div class="info-box"><div class="lb">기관 5일합</div><div class="val" style="color: {'red' if inst_net > 0 else 'black'};">{inst_net/1e8:,.1f}억</div></div>
     </div>
