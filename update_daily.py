@@ -11,7 +11,7 @@ import pandas as pd
 import requests
 import FinanceDataReader as fdr
 from datetime import datetime, timedelta
-from scanner_core import calculate_signals, score_stock
+from scanner_core import calculate_signals, score_stock, calculate_strategies
 from news_analyzer import analyze_stock_news
 
 
@@ -274,6 +274,15 @@ def main():
             sig = calculate_signals(df, cfg)
             scored = score_stock(df, sig, cfg, mktcap=mktcap, index_above_ma20=index_above_ma20)
             if scored is None: continue
+            
+            # 전략 계산 추가
+            strat_result = calculate_strategies(df, sig, cfg)
+            if strat_result:
+                # 전략 정보를 scored에 병합 (strategies 리스트 제외, flat 필드만)
+                for k, v in strat_result.items():
+                    if k != 'strategies':
+                        scored[k] = v
+            
             # score_details를 JSON 문자열로 변환
             if 'score_details' in scored and isinstance(scored['score_details'], dict):
                 scored['score_details'] = json.dumps(scored['score_details'], ensure_ascii=False)
