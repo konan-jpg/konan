@@ -228,6 +228,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
 
     # 기본 정보 Grid
     foreign = int(row.get('foreign_consec_buy', 0))
+    foreign_net = row.get('foreign_net_5d', 0) if 'foreign_net_5d' in row else row.get('foreign_net', 0)
     inst_net = row.get('inst_net_5d', 0)
     risk_pct = row.get('risk_pct', 0)
     base_stop = row.get('stop', 0)
@@ -246,6 +247,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
         <div class="info-box"><div class="lb">총점</div><div class="val" style="color: #2e86de;">{row['total_score']:.0f}점</div></div>
         <div class="info-box"><div class="lb">셋업</div><div class="val">{row.get('setup','-')}</div></div>
         <div class="info-box"><div class="lb">외국인 연속</div><div class="val" style="color: {'red' if foreign > 0 else 'black'};">{foreign}일</div></div>
+        <div class="info-box"><div class="lb">외국인 5일합</div><div class="val" style="color: {'red' if foreign_net > 0 else 'black'};">{foreign_net/1e8:,.1f}억</div></div>
         <div class="info-box"><div class="lb">기관 5일합</div><div class="val" style="color: {'red' if inst_net > 0 else 'black'};">{inst_net/1e8:,.1f}억</div></div>
     </div>
     """, unsafe_allow_html=True)
@@ -305,76 +307,183 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                 st.markdown(f"**{v['name']}**: {v['description']}")
                 st.caption(", ".join(v['components']))
             
-    # 매수 전략 추천 (이전과 동일)
+    # 매수 전략 추천 - 동적 우선순위 시스템
     st.markdown("---")
     st.markdown("#### 🎯 AI 매수 전략 가이드")
     
     try:
         cp = float(row['close'])
-        ma20 = float(row.get('ma20', cp))
-        base_stop = float(row.get('stop', cp*0.92))
-        bb_upper = float(row.get('bb_upper', cp*1.05))
+        strategies = []
+        use_csv_strategies = False
         
-        # 전략 계산
-        pullback_price = ma20
-        pullback_stop = max(ma20 * 0.97, base_stop)
-        # 손절가가 진입가보다 높으면 진입가 기준으로 재설정
-        if pullback_stop >= pullback_price:
-            pullback_stop = pullback_price * 0.95
+        # CSV에 저장된 전략 정보 있는지 확인
+        if 'strat1_type' in row and pd.notna(row.get('strat1_type')):
+            use_csv_strategies = True
+            strategies = [
+                {'type': row.get('strat1_type',''), 'name': row.get('strat1_name',''), 
+                 'entry': float(row.get('strat1_entry',0)), 'stop': float(row.get('strat1_stop',0)),
+                 'risk': float(row.get('strat1_risk',0)), 'active': True},
+                {'type': row.get('strat2_type',''), 'name': row.get('strat2_name',''),
+                 'entry': float(row.get('strat2_entry',0)), 'stop': float(row.get('strat2_stop',0)),
+                 'risk': float(row.get('strat2_risk',0)), 'active': True},
+                {'type': row.get('strat3_type',''), 'name': row.get('strat3_name',''),
+                 'entry': float(row.get('strat3_entry',0)), 'stop': float(row.get('strat3_stop',0)),
+                 'risk': float(row.get('strat3_risk',0)), 'active': row.get('strat3_name','') not in ['오닐', '']}
+            ]
         
-        breakout_price = bb_upper if bb_upper > cp else cp * 1.02
-        breakout_stop = breakout_price * 0.95
+        # CSV에 없으면 실시간 계산
+        if not use_csv_strategies:
+            ma20 = float(row.get('ma20', cp))
+            ma10 = cp
+            base_stop = float(row.get('stop', cp*0.92))
+            bb_upper = float(row.get('bb_upper', cp*1.05))
+            atr20 = cp * 0.02
+            climax_low = base_stop
         
-        # 오닐 패턴
-        oneil_price, oneil_stop, oneil_msg = 0, 0, ""
-        # ... (오닐 패턴 탐지 로직은 위에서 계산된 것을 사용해야 하나, display 함수 내에서 다시 계산 or 전달받아야 함. 
-        # 여기서는 오닐 패턴이 row에 없으므로 다시 계산하거나 생략. 
-        # 사실 실시간 진단에서는 다시 계산하는게 맞음. 아래 차트 그리기 전에 계산)
-        
-        # 이전 코드의 오닐 로직 복원
-        try:
-            sub_df = fdr.DataReader(row['code'], datetime.now()-timedelta(days=60), datetime.now())
-            if sub_df is not None and len(sub_df) >= 2:
-                today = sub_df.iloc[-1]
-                prev = sub_df.iloc[-2]
-                vol_ma = sub_df['Volume'].rolling(20).mean().iloc[-1]
-                
+            try:
+                sub_df = fdr.DataReader(row['code'], datetime.now()-timedelta(days=100), datetime.now())
+                if sub_df is not None and len(sub_df) >= 20:
+                    # ATR(20) 계산
+                    tr = pd.concat([
+                        sub_df['High'] - sub_df['Low'],
+                        (sub_df['High'] - sub_df['Close'].shift(1)).abs(),
+                        (sub_df['Low'] - sub_df['Close'].shift(1)).abs()
+                    ], axis=1).max(axis=1)
+                    atr20 = tr.rolling(20).mean().iloc[-1]
+                    
+                    # MA10 계산
+                    ma10 = sub_df['Close'].rolling(10).mean().iloc[-1]
+                    
+                    # Climax Low 찾기 (거래량 폭발 봉의 저점)
+                    vol_avg = sub_df['Volume'].rolling(20).mean()
+                    climax_mask = sub_df['Volume'] >= (vol_avg * 3)
+                    if climax_mask.any():
+                        climax_low = sub_df.loc[climax_mask, 'Low'].iloc[-1]
+                    else:
+                        climax_low = sub_df['Low'].tail(10).min()
+                    
+                    today = sub_df.iloc[-1]
+                    prev = sub_df.iloc[-2]
+                    vol_ma = sub_df['Volume'].rolling(20).mean().iloc[-1]
+            except:
+                sub_df = None
+                today, prev, vol_ma = None, None, 0
+            
+            # ═══════════════════════════════════════════════════
+            # 전략 1: Pullback (눌림목)
+            # Entry: 20MA, Stop: max(climax_low, entry - 1.2*ATR)
+            # ═══════════════════════════════════════════════════
+            pullback_entry = ma20
+            pullback_stop = max(climax_low, pullback_entry - 1.2 * atr20)
+            # 손절가가 진입가 이상이면 재설정
+            if pullback_stop >= pullback_entry:
+                pullback_stop = pullback_entry * 0.95
+            pullback_risk = (pullback_entry - pullback_stop) / pullback_entry * 100
+            
+            strategies.append({
+                'name': '눌림목', 'icon': '📉', 'desc': '20일선 지지',
+                'entry': pullback_entry, 'stop': pullback_stop, 'risk': pullback_risk,
+                'color': 'green', 'active': True
+            })
+            
+            # ═══════════════════════════════════════════════════
+            # 전략 2: Breakout (돌파)
+            # Entry: BB60 상단, Stop: entry - 1.5*ATR
+            # ═══════════════════════════════════════════════════
+            breakout_entry = bb_upper if bb_upper > cp else cp * 1.02
+            breakout_stop = breakout_entry - 1.5 * atr20
+            # 손절가가 진입가 이상이면 재설정
+            if breakout_stop >= breakout_entry:
+                breakout_stop = breakout_entry * 0.95
+            breakout_risk = (breakout_entry - breakout_stop) / breakout_entry * 100
+            
+            strategies.append({
+                'name': '돌파', 'icon': '🚀', 'desc': 'BB60 상단 돌파',
+                'entry': breakout_entry, 'stop': breakout_stop, 'risk': breakout_risk,
+                'color': 'orange', 'active': True
+            })
+            
+            # ═══════════════════════════════════════════════════
+            # 전략 3: O'Neil (Pocket Pivot)
+            # Entry: 당일 종가, Stop: 10MA 또는 entry - ATR
+            # ═══════════════════════════════════════════════════
+            oneil_entry, oneil_stop, oneil_msg = 0, 0, ""
+            oneil_active = False
+            
+            if sub_df is not None and today is not None and prev is not None:
+                # Inside Day
                 if today['High'] < prev['High'] and today['Low'] > prev['Low']:
-                    oneil_price, oneil_msg = today['High'], "Inside Day 돌파"
+                    oneil_entry, oneil_msg = today['High'], "Inside Day"
+                # Oops Reversal
                 elif today['Open'] < prev['Low'] and today['Close'] > prev['Low']:
-                    oneil_price, oneil_msg = today['Close'], "Oops Reversal"
-                elif today['Volume'] > vol_ma * 2:
-                    oneil_price, oneil_msg = today['Close'], "Pocket Pivot"
+                    oneil_entry, oneil_msg = today['Close'], "Oops Reversal"
+                # Pocket Pivot (거래량 2배)
+                elif today['Volume'] > vol_ma * 2 and today['Close'] > today['Open']:
+                    oneil_entry, oneil_msg = today['Close'], "Pocket Pivot"
                 
-                if oneil_price > 0: oneil_stop = oneil_price * 0.94
-        except: pass
-        
-        # 카드 표시 - 순위 포함
-        col1, col2, col3 = st.columns(3)
-        risk1 = (pullback_price - pullback_stop) / pullback_price * 100
-        risk2 = (breakout_price - breakout_stop) / breakout_price * 100
-        
-        with col1:
-             st.markdown(f"""<div style="background-color:rgba(0,128,0,0.1);padding:15px;border-radius:10px;border:1px solid green;">
-                <span style="background:green;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">1순위</span>
-                <h5 style="margin:5px 0 0;color:green;">📉 눌림목 전략</h5><p style="font-size:13px;margin:5px 0;">20일선 지지</p>
-                <b>진입: {pullback_price:,.0f}원</b><br><span style="color:red">손절: {pullback_stop:,.0f}원 (-{risk1:.1f}%)</span></div>""", unsafe_allow_html=True)
-        with col2:
-             st.markdown(f"""<div style="background-color:rgba(255,165,0,0.1);padding:15px;border-radius:10px;border:1px solid orange;">
-                <span style="background:orange;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">2순위</span>
-                <h5 style="margin:5px 0 0;color:orange;">🚀 돌파 전략</h5><p style="font-size:13px;margin:5px 0;">BB 상단 돌파</p>
-                <b>진입: {breakout_price:,.0f}원</b><br><span style="color:red">손절: {breakout_stop:,.0f}원 (-{risk2:.1f}%)</span></div>""", unsafe_allow_html=True)
-        with col3:
-            if oneil_price > 0:
-                risk3 = (oneil_price - oneil_stop) / oneil_price * 100
-                st.markdown(f"""<div style="background-color:rgba(138,43,226,0.1);padding:15px;border-radius:10px;border:1px solid blueviolet;">
-                    <span style="background:blueviolet;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">3순위</span>
-                    <h5 style="margin:5px 0 0;color:blueviolet;">💎 {oneil_msg}</h5><p style="font-size:13px;margin:5px 0;">오닐 패턴 포착</p>
-                    <b>진입: {oneil_price:,.0f}원</b><br><span style="color:red">손절: {oneil_stop:,.0f}원 (-{risk3:.1f}%)</span></div>""", unsafe_allow_html=True)
+                if oneil_entry > 0:
+                    oneil_stop = max(ma10, oneil_entry - atr20)
+                    if oneil_stop >= oneil_entry:
+                        oneil_stop = oneil_entry * 0.94
+                    oneil_active = True
+            
+            if oneil_active:
+                oneil_risk = (oneil_entry - oneil_stop) / oneil_entry * 100
+                strategies.append({
+                    'name': oneil_msg, 'icon': '💎', 'desc': '오닐 패턴',
+                    'entry': oneil_entry, 'stop': oneil_stop, 'risk': oneil_risk,
+                    'color': 'blueviolet', 'active': True
+                })
             else:
-                st.markdown(f"""<div style="background-color:rgba(128,128,128,0.1);padding:15px;border-radius:10px;border:1px solid gray;">
-                    <span style="background:gray;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">3순위</span>
-                    <h5 style="margin:5px 0 0;color:gray;">💎 오닐 패턴</h5><p style="margin:5px 0;">현재 포착 패턴 없음</p></div>""", unsafe_allow_html=True)
+                strategies.append({
+                    'name': '오닐 패턴', 'icon': '💎', 'desc': '포착 없음',
+                    'entry': 0, 'stop': 0, 'risk': 999,
+                    'color': 'gray', 'active': False
+                })
+            
+            # ═══════════════════════════════════════════════════
+            # 리스크 기준 동적 우선순위 결정 (낮을수록 우선)
+            # ═══════════════════════════════════════════════════
+            strategies.sort(key=lambda x: (not x['active'], x['risk']))
+        
+        # CSV 전략 사용 시 아이콘/색상 추가
+        if use_csv_strategies:
+            for strat in strategies:
+                if strat['type'] == 'pullback':
+                    strat['icon'] = '📉'
+                    strat['color'] = 'green'
+                    strat['desc'] = '20일선 지지'
+                elif strat['type'] == 'breakout':
+                    strat['icon'] = '🚀'
+                    strat['color'] = 'orange'
+                    strat['desc'] = 'BB60 상단 돌파'
+                else:
+                    strat['icon'] = '💎'
+                    strat['color'] = 'blueviolet' if strat['active'] else 'gray'
+                    strat['desc'] = '오닐 패턴'
+        
+        # 순위 표시
+        col1, col2, col3 = st.columns(3)
+        cols = [col1, col2, col3]
+        rank_labels = ['1순위', '2순위', '3순위']
+        
+        for i, (col, strat, rank) in enumerate(zip(cols, strategies, rank_labels)):
+            with col:
+                if strat['active']:
+                    risk_pct = strat['risk']
+                    st.markdown(f"""<div style="background-color:rgba({'0,128,0' if i==0 else '255,165,0' if i==1 else '138,43,226'},0.1);padding:15px;border-radius:10px;border:1px solid {strat['color']};">
+                        <span style="background:{strat['color']};color:white;padding:2px 8px;border-radius:10px;font-size:11px;">{rank}</span>
+                        <h5 style="margin:5px 0 0;color:{strat['color']};">{strat['icon']} {strat['name']} 전략</h5>
+                        <p style="font-size:13px;margin:5px 0;">{strat['desc']}</p>
+                        <b>진입: {strat['entry']:,.0f}원</b><br>
+                        <span style="color:red">손절: {strat['stop']:,.0f}원 (-{risk_pct:.1f}%)</span>
+                    </div>""", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""<div style="background-color:rgba(128,128,128,0.1);padding:15px;border-radius:10px;border:1px solid gray;">
+                        <span style="background:gray;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">{rank}</span>
+                        <h5 style="margin:5px 0 0;color:gray;">{strat['icon']} {strat['name']}</h5>
+                        <p style="margin:5px 0;">{strat['desc']}</p>
+                    </div>""", unsafe_allow_html=True)
 
     except Exception as e: st.error(f"전략 오류: {e}")
 
