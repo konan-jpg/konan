@@ -177,10 +177,22 @@ def get_score_explanations():
     }
 
 def get_detail_text(key, val):
+    # 각 항목별 최대점수 정의
+    max_scores = {
+        'trend_ma20': 5, 'trend_ma50': 5, 'trend_ma200': 5,
+        'trend_align_20_50': 2, 'trend_align_50_200': 3,
+        'trend_adx': 5,
+        'pat_door_knock': 10, 'pat_squeeze': 10,
+        'pat_setup_a': 5, 'pat_setup_b': 5, 'pat_setup_c': 3,
+        'pat_rs_3m': 5, 'pat_rs_6m': 5,
+        'vol_explosion': 5, 'vol_dryup': 7, 'vol_today': 8,
+        'sup_foreign_consec': 8, 'sup_inst_net': 4, 'sup_foreign_net': 3,
+        'risk_safe': 10, 'risk_deduction': 10
+    }
     maps = {
         'trend_ma20': '현재가 > 20일선', 'trend_ma50': '현재가 > 50일선', 'trend_ma200': '현재가 > 200일선',
         'trend_align_20_50': '20일 > 50일 정배열', 'trend_align_50_200': '50일 > 200일 정배열',
-        'trend_adx': f'ADX 강한 추세',
+        'trend_adx': 'ADX 강한 추세',
         'pat_door_knock': 'Door Knock 패턴', 'pat_squeeze': 'Squeeze (변동성 축소)',
         'pat_setup_a': 'Setup A (돌파)', 'pat_setup_b': 'Setup B (눌림목)', 'pat_setup_c': 'Setup C (추세전환)',
         'pat_rs_3m': '3개월 RS 80 이상', 'pat_rs_6m': '6개월 RS 80 이상',
@@ -189,8 +201,9 @@ def get_detail_text(key, val):
         'risk_safe': '리스크 5% 이내 안전', 'risk_deduction': '리스크 관리 감점'
     }
     desc = maps.get(key, key)
-    sign = "+" if val > 0 else ""
-    return f"{desc} ({sign}{val}점)"
+    max_score = max_scores.get(key, 10)
+    score = abs(val) if val < 0 else val
+    return f"{desc} ({score}/{max_score})"
 
 def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     st.markdown("---")
@@ -302,10 +315,15 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
         base_stop = float(row.get('stop', cp*0.92))
         bb_upper = float(row.get('bb_upper', cp*1.05))
         
-        # 전략 계산 (동일 로직) ...
-        # (코드 중략 없이 내용을 유지해야 함으로, 필요한 변수 및 로직 재사용)
-        pullback_price, pullback_stop = ma20, max(ma20 * 0.97, base_stop)
-        breakout_price, breakout_stop = (bb_upper if bb_upper > cp else cp * 1.02), (bb_upper if bb_upper > cp else cp * 1.02) * 0.95
+        # 전략 계산
+        pullback_price = ma20
+        pullback_stop = max(ma20 * 0.97, base_stop)
+        # 손절가가 진입가보다 높으면 진입가 기준으로 재설정
+        if pullback_stop >= pullback_price:
+            pullback_stop = pullback_price * 0.95
+        
+        breakout_price = bb_upper if bb_upper > cp else cp * 1.02
+        breakout_stop = breakout_price * 0.95
         
         # 오닐 패턴
         oneil_price, oneil_stop, oneil_msg = 0, 0, ""
@@ -432,6 +450,7 @@ if mode == "📊 시장 스캐너":
     df, sector_df, filename = load_data()
     
     st.title("📊 당일 시장 스캐너")
+    st.info("📌 **총점 65점 이상만 매수대상** | 필수: 6개월 RS 70점 이상, 보조: 3개월 RS 65점 이상")
     if filename:
         st.caption(f"📅 데이터 기준: {filename} (최신 업데이트)")
     else:
@@ -466,7 +485,7 @@ if mode == "📊 시장 스캐너":
         st.markdown("---")
         
         # 필터 및 리스트
-        min_score = st.slider("최소 점수 필터", 0, 100, 60)
+        min_score = st.number_input("최소 점수 필터", min_value=0, max_value=100, value=65, step=5)
         filtered = df[df['total_score'] >= min_score].copy()
         
         st.subheader(f"🏆 고득점 종목 Top {len(filtered)}")
@@ -510,6 +529,7 @@ if mode == "📊 시장 스캐너":
 
 elif mode == "🔍 종목 상세 진단":
     st.title("🔍 실시간 종목 상세 진단")
+    st.info("📌 **총점 65점 이상만 매수대상** | 필수: 6개월 RS 70점 이상, 보조: 3개월 RS 65점 이상")
     
     # 통합 검색창 (Selectbox with search)
     stock_list = get_krx_codes()
@@ -524,9 +544,6 @@ elif mode == "🔍 종목 상세 진단":
     if selected_option:
         name = selected_option.split(' (')[0]
         code = str(selected_option.split(' (')[1][:-1]).zfill(6)
-        
-        rs_3m = st.number_input("3개월 RS 점수 (선택사항, 0~99)", 0, 99, 0)
-        rs_6m = st.number_input("6개월 RS 점수 (선택사항, 0~99)", 0, 99, 0)
         
         if st.button("🚀 진단 시작"):
             with st.spinner(f"{name} ({code}) 데이터를 분석 중입니다..."):
@@ -560,7 +577,7 @@ elif mode == "🔍 종목 상세 진단":
                 if df_stock is not None and len(df_stock) > 100:
                     cfg = load_config()
                     sig = calculate_signals(df_stock, cfg)
-                    result = score_stock(df_stock, sig, cfg, rs_3m=rs_3m, rs_6m=rs_6m, investor_data=inv_data)
+                    result = score_stock(df_stock, sig, cfg, investor_data=inv_data)
                     
                     if result:
                         row = pd.Series(result)
@@ -575,7 +592,7 @@ elif mode == "🔍 종목 상세 진단":
                             row['foreign_consec_buy'] = inv_data['foreign_consecutive_buy']
                             row['inst_net_5d'] = inv_data['inst_net_buy_5d']
                         
-                        display_stock_report(row, sector_df, rs_3m, rs_6m)
+                        display_stock_report(row, sector_df)
                     else:
                         st.error("점수 계산에 실패했습니다.")
                 else:
@@ -583,7 +600,8 @@ elif mode == "🔍 종목 상세 진단":
 
 elif mode == "🖼️ 차트 이미지 분석":
     st.title("🖼️ 차트 이미지 분석")
-    st.info("HTS/MTS 차트 이미지를 업로드하면 AI가 패턴을 분석하고 점수를 매깁니다.")
+    st.info("📌 **총점 65점 이상만 매수대상** | 필수: 6개월 RS 70점 이상, 보조: 3개월 RS 65점 이상")
+    st.caption("HTS/MTS 차트 이미지를 업로드하면 AI가 패턴을 분석하고 점수를 매깁니다.")
     
     uploaded_file = st.file_uploader("이미지 파일 업로드 (PNG, JPG)", type=['png', 'jpg', 'jpeg'])
     
