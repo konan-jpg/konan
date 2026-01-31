@@ -8,6 +8,7 @@ import requests
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from news_analyzer import search_naver_news
 import FinanceDataReader as fdr
 import yaml
 from scanner_core import calculate_signals, score_stock
@@ -33,6 +34,7 @@ def get_investor_data_realtime(code):
             df = target_df.dropna(how='all').head(10)
             f_con, f_net, i_net = 0, 0, 0
             
+            # 컬럼 찾기
             cols = [str(c).lower() for c in df.columns]
             f_col = next((i for i, c in enumerate(cols) if '외국인' in c), -1)
             i_col = next((i for i, c in enumerate(cols) if '기관' in c), -1)
@@ -72,21 +74,27 @@ def load_config():
 def load_data():
     df, filename = None, None
     
+    # 1. 파일 목록 확인 (latest 파일 제외 - 날짜 비교 문제 방지)
     merged_files = [f for f in glob.glob("data/scanner_output*.csv") 
                     if "chunk" not in f and "latest" not in f]
     chunk_files = glob.glob("data/partial/scanner_output*chunk*.csv")
     
+    # 날짜 추출 헬퍼
     def get_date_from_filename(fn):
         try:
             basename = os.path.basename(fn)
+            # scanner_output_YYYY-MM-DD...
             parts = basename.replace('scanner_output_', '').split('_')
             date_str = parts[0]
+            # .csv 제거
             if date_str.endswith('.csv'): date_str = date_str.replace('.csv', '')
+            # 날짜 형식 검증 (YYYY-MM-DD)
             if len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
                 return date_str
             return '0000-00-00'
         except: return '0000-00-00'
 
+    # 최신 날짜 찾기
     latest_merged_date = '0000-00-00'
     latest_merged_file = None
     if merged_files:
@@ -98,6 +106,7 @@ def load_data():
         latest_chunk_file = max(chunk_files, key=get_date_from_filename)
         latest_chunk_date = get_date_from_filename(latest_chunk_file)
     
+    # 로딩 로직: 청크가 더 최신이거나 같으면 청크 사용 (방금 수집된 데이터 우선)
     if latest_chunk_date >= latest_merged_date and latest_chunk_date != '0000-00-00':
         try:
             target_chunks = [f for f in chunk_files if latest_chunk_date in os.path.basename(f)]
@@ -109,6 +118,7 @@ def load_data():
         except Exception as e:
             st.error(f"청크 데이터 병합 중 오류: {e}")
             
+    # 청크 로드 실패했거나 병합 파일이 더 최신인 경우
     if df is None and latest_merged_file:
         try:
             df = pd.read_csv(latest_merged_file, dtype={'code': str})
@@ -125,15 +135,18 @@ def load_data():
 
 @st.cache_data
 def get_krx_codes():
+    # 1. fdr 사용
     try:
         df = fdr.StockListing("KRX")
         if df is not None and not df.empty:
             return df[['Code', 'Name']]
     except: pass
     
+    # 2. 로컬 파일 사용
     if os.path.exists("data/krx_tickers.csv"):
         return pd.read_csv("data/krx_tickers.csv", dtype={'Code': str})[['Code', 'Name']]
         
+    # 3. 스캔 데이터 사용
     df_scan, _, _ = load_data()
     if df_scan is not None:
         return df_scan[['code', 'name']].rename(columns={'code': 'Code', 'name': 'Name'}).drop_duplicates()
@@ -154,7 +167,7 @@ def get_score_explanations():
         'trend_score': {'name': '추세 (25점)', 'description': '이동평균 정배열 + ADX 강도', 
                         'components': ['현재가>20선:+5', '현재가>50선:+5', '현재가>200선:+5', '정배열:+5', 'ADX강도:+2-5']},
         'pattern_score': {'name': '위치 (30점)', 'description': '매집 패턴 및 돌파 임박', 
-                          'components': ['Door Knock:+10', 'Squeeze:+10', 'Setup:+3-5']},
+                          'components': ['Door Knock:+10', 'Squeeze:+10', 'Setup:+3-5', 'RS80+:+5']},
         'volume_score': {'name': '거래량 (20점)', 'description': '수급의 흔적 (폭발/수축)', 
                          'components': ['과거폭발:+5', '거래량수축:+3-7', '당일거래량:+3-8']},
         'supply_score': {'name': '수급 (15점)', 'description': '외국인/기관 매수세', 
@@ -164,104 +177,45 @@ def get_score_explanations():
     }
 
 def get_detail_text(key, val):
-    """점수 상세 항목 텍스트 생성 - 0점도 표시, RS 제외"""
+    # 각 항목별 최대점수 정의
     max_scores = {
         'trend_ma20': 5, 'trend_ma50': 5, 'trend_ma200': 5,
-        'trend_align_20_50': 3, 'trend_align_50_200': 2,
+        'trend_align_20_50': 2, 'trend_align_50_200': 3,
         'trend_adx': 5,
         'pat_door_knock': 10, 'pat_squeeze': 10,
-        'pat_setup_a': 4, 'pat_setup_b': 5, 'pat_setup_c': 3,
+        'pat_setup_a': 5, 'pat_setup_b': 5, 'pat_setup_c': 3,
+        'pat_rs_3m': 5, 'pat_rs_6m': 5,
         'vol_explosion': 5, 'vol_dryup': 7, 'vol_today': 8,
         'sup_foreign_consec': 8, 'sup_inst_net': 4, 'sup_foreign_net': 3,
         'risk_safe': 10, 'risk_deduction': 10
     }
-    
     maps = {
-        'trend_ma20': '현재가 > 20일선', 
-        'trend_ma50': '현재가 > 50일선', 
-        'trend_ma200': '현재가 > 200일선',
-        'trend_align_20_50': '20일 > 50일 정배열', 
-        'trend_align_50_200': '50일 > 200일 정배열',
+        'trend_ma20': '현재가 > 20일선', 'trend_ma50': '현재가 > 50일선', 'trend_ma200': '현재가 > 200일선',
+        'trend_align_20_50': '20일 > 50일 정배열', 'trend_align_50_200': '50일 > 200일 정배열',
         'trend_adx': 'ADX 강한 추세',
-        'pat_door_knock': 'Door Knock 패턴', 
-        'pat_squeeze': 'Squeeze (변동성 축소)',
-        'pat_setup_a': 'Setup A (스퀴즈 돌파)', 
-        'pat_setup_b': 'Setup B (기준봉 돌파)', 
-        'pat_setup_c': 'Setup C (20일선 돌파)',
-        'vol_explosion': '과거 거래량 폭발', 
-        'vol_dryup': '거래량 수축 발생', 
-        'vol_today': '당일 거래량 강세',
-        'sup_foreign_consec': '외국인 연속 매수', 
-        'sup_inst_net': '기관 순매수', 
-        'sup_foreign_net': '외국인 순매수',
-        'risk_safe': '리스크 5% 이내', 
-        'risk_deduction': '리스크 관리 감점'
+        'pat_door_knock': 'Door Knock 패턴', 'pat_squeeze': 'Squeeze (변동성 축소)',
+        'pat_setup_a': 'Setup A (돌파)', 'pat_setup_b': 'Setup B (눌림목)', 'pat_setup_c': 'Setup C (추세전환)',
+        'pat_rs_3m': '3개월 RS 80 이상', 'pat_rs_6m': '6개월 RS 80 이상',
+        'vol_explosion': '과거 거래량 폭발', 'vol_dryup': '거래량 수축 발생', 'vol_today': '당일 거래량 강세',
+        'sup_foreign_consec': '외국인 연속 매수', 'sup_inst_net': '기관 순매수', 'sup_foreign_net': '외국인 순매수',
+        'risk_safe': '리스크 5% 이내 안전', 'risk_deduction': '리스크 관리 감점'
     }
-    
     desc = maps.get(key, key)
     max_score = max_scores.get(key, 10)
     score = abs(val) if val < 0 else val
-    
     return f"{desc} ({score}/{max_score})"
-
-def display_score_details_all_items(details):
-    """모든 항목 표시 (0점 포함, RS 제외)"""
-    all_items = {
-        'trend': [
-            ('trend_ma20', 5),
-            ('trend_ma50', 5),
-            ('trend_ma200', 5),
-            ('trend_align_20_50', 3),
-            ('trend_align_50_200', 2),
-            ('trend_adx', 5)
-        ],
-        'pattern': [
-            ('pat_door_knock', 10),
-            ('pat_squeeze', 10),
-            ('pat_setup_b', 5),
-            ('pat_setup_a', 4),
-            ('pat_setup_c', 3),
-        ],
-        'volume': [
-            ('vol_explosion', 5),
-            ('vol_dryup', 7),
-            ('vol_today', 8)
-        ],
-        'supply': [
-            ('sup_foreign_consec', 8),
-            ('sup_inst_net', 4),
-            ('sup_foreign_net', 3)
-        ],
-        'risk': [
-            ('risk_safe', 10),
-            ('risk_deduction', 10)
-        ]
-    }
-    
-    cols = st.columns(3)
-    
-    with cols[0]:
-        st.caption("📈 추세 & 위치")
-        for key, max_val in all_items['trend'] + all_items['pattern']:
-            actual_val = details.get(key, 0)
-            st.markdown(f"- {get_detail_text(key, actual_val)}")
-    
-    with cols[1]:
-        st.caption("📊 거래량 & 수급")
-        for key, max_val in all_items['volume'] + all_items['supply']:
-            actual_val = details.get(key, 0)
-            st.markdown(f"- {get_detail_text(key, actual_val)}")
-    
-    with cols[2]:
-        st.caption("🛡️ 리스크")
-        for key, max_val in all_items['risk']:
-            actual_val = details.get(key, 0)
-            st.markdown(f"- {get_detail_text(key, actual_val)}")
 
 def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     st.markdown("---")
     st.subheader(f"📊 {row.get('name', 'N/A')} ({row.get('code', '')}) 상세 분석")
     
+    # RS 정보
+    if rs_3m or rs_6m:
+        c1, c2 = st.columns(2)
+        if rs_3m: c1.metric("3개월 RS", f"{rs_3m}")
+        if rs_6m: c2.metric("6개월 RS", f"{rs_6m}")
+    
+    # 섹터 정보
     stock_sector = row.get('sector', '기타')
     if sector_df is not None and not sector_df.empty:
         leaders = sector_df.head(5)['Sector'].tolist()
@@ -272,6 +226,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     else:
         st.info(f"📌 **업종**: {stock_sector}")
 
+    # 기본 정보 Grid
     foreign = int(row.get('foreign_consec_buy', 0))
     foreign_net = row.get('foreign_net_5d', 0) if 'foreign_net_5d' in row else row.get('foreign_net', 0)
     inst_net = row.get('inst_net_5d', 0)
@@ -297,6 +252,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     </div>
     """, unsafe_allow_html=True)
 
+    # 셋업 설명
     current_setup = row.get('setup', '-')
     explanations = get_setup_explanations()
     if current_setup != '-':
@@ -305,14 +261,17 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     
     st.markdown("---")
     
+    # 점수 상세 (5개 항목)
     st.markdown("#### 📈 점수 구성 상세 (100점 만점)")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("추세 (25)", f"{row.get('trend_score',0):.0f}")
-    c2.metric("위치 (30)", f"{row.get('pattern_score',0):.0f}")
+    c2.metric("위치 (30)", f"{row.get('pattern_score',0):.0f}", help="RS 가산점 포함")
     c3.metric("거래량 (20)", f"{row.get('volume_score',0):.0f}")
     c4.metric("수급 (15)", f"{row.get('supply_score',0):.0f}")
     c5.metric("리스크 (10)", f"{row.get('risk_score',10):.0f}")
 
+    # 상세 판정 내용 (동적 생성)
+    # score_details가 문자열(JSON)인 경우 파싱
     score_details = row.get('score_details', None)
     if isinstance(score_details, str):
         try:
@@ -322,13 +281,33 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
     
     if score_details and isinstance(score_details, dict):
         with st.expander("📝 상세 점수 획득 내역 보기", expanded=True):
-            display_score_details_all_items(score_details)
+            details = score_details
+            cols = st.columns(3)
+            # 추세
+            with cols[0]:
+                st.caption("📈 추세 & 위치")
+                for k, v in details.items():
+                    if 'trend' in k or 'pat' in k:
+                        st.markdown(f"- {get_detail_text(k, v)}")
+            # 거래량 & 수급
+            with cols[1]:
+                st.caption("📊 거래량 & 수급")
+                for k, v in details.items():
+                    if 'vol' in k or 'sup' in k:
+                        st.markdown(f"- {get_detail_text(k, v)}")
+            # 리스크
+            with cols[2]:
+                st.caption("🛡️ 리스크")
+                for k, v in details.items():
+                    if 'risk' in k:
+                        st.markdown(f"- {get_detail_text(k, v)}")
     else:
         with st.expander("📝 상세 점수 기준 보기"):
             for k, v in get_score_explanations().items():
                 st.markdown(f"**{v['name']}**: {v['description']}")
                 st.caption(", ".join(v['components']))
             
+    # 매수 전략 추천 - 동적 우선순위 시스템
     st.markdown("---")
     st.markdown("#### 🎯 AI 매수 전략 가이드")
     
@@ -337,6 +316,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
         strategies = []
         use_csv_strategies = False
         
+        # CSV에 저장된 전략 정보 있는지 확인
         if 'strat1_type' in row and pd.notna(row.get('strat1_type')):
             use_csv_strategies = True
             strategies = [
@@ -351,6 +331,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                  'risk': float(row.get('strat3_risk',0)), 'active': row.get('strat3_name','') not in ['오닐', '']}
             ]
         
+        # CSV에 없으면 실시간 계산
         if not use_csv_strategies:
             ma20 = float(row.get('ma20', cp))
             ma10 = cp
@@ -362,6 +343,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
             try:
                 sub_df = fdr.DataReader(row['code'], datetime.now()-timedelta(days=100), datetime.now())
                 if sub_df is not None and len(sub_df) >= 20:
+                    # ATR(20) 계산
                     tr = pd.concat([
                         sub_df['High'] - sub_df['Low'],
                         (sub_df['High'] - sub_df['Close'].shift(1)).abs(),
@@ -369,8 +351,10 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                     ], axis=1).max(axis=1)
                     atr20 = tr.rolling(20).mean().iloc[-1]
                     
+                    # MA10 계산
                     ma10 = sub_df['Close'].rolling(10).mean().iloc[-1]
                     
+                    # Climax Low 찾기 (거래량 폭발 봉의 저점)
                     vol_avg = sub_df['Volume'].rolling(20).mean()
                     climax_mask = sub_df['Volume'] >= (vol_avg * 3)
                     if climax_mask.any():
@@ -385,8 +369,13 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                 sub_df = None
                 today, prev, vol_ma = None, None, 0
             
+            # ═══════════════════════════════════════════════════
+            # 전략 1: Pullback (눌림목)
+            # Entry: 20MA, Stop: max(climax_low, entry - 1.2*ATR)
+            # ═══════════════════════════════════════════════════
             pullback_entry = ma20
             pullback_stop = max(climax_low, pullback_entry - 1.2 * atr20)
+            # 손절가가 진입가 이상이면 재설정
             if pullback_stop >= pullback_entry:
                 pullback_stop = pullback_entry * 0.95
             pullback_risk = (pullback_entry - pullback_stop) / pullback_entry * 100
@@ -397,8 +386,13 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                 'color': 'green', 'active': True
             })
             
+            # ═══════════════════════════════════════════════════
+            # 전략 2: Breakout (돌파)
+            # Entry: BB60 상단, Stop: entry - 1.5*ATR
+            # ═══════════════════════════════════════════════════
             breakout_entry = bb_upper if bb_upper > cp else cp * 1.02
             breakout_stop = breakout_entry - 1.5 * atr20
+            # 손절가가 진입가 이상이면 재설정
             if breakout_stop >= breakout_entry:
                 breakout_stop = breakout_entry * 0.95
             breakout_risk = (breakout_entry - breakout_stop) / breakout_entry * 100
@@ -409,14 +403,21 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                 'color': 'orange', 'active': True
             })
             
+            # ═══════════════════════════════════════════════════
+            # 전략 3: O'Neil (Pocket Pivot)
+            # Entry: 당일 종가, Stop: 10MA 또는 entry - ATR
+            # ═══════════════════════════════════════════════════
             oneil_entry, oneil_stop, oneil_msg = 0, 0, ""
             oneil_active = False
             
             if sub_df is not None and today is not None and prev is not None:
+                # Inside Day
                 if today['High'] < prev['High'] and today['Low'] > prev['Low']:
                     oneil_entry, oneil_msg = today['High'], "Inside Day"
+                # Oops Reversal
                 elif today['Open'] < prev['Low'] and today['Close'] > prev['Low']:
                     oneil_entry, oneil_msg = today['Close'], "Oops Reversal"
+                # Pocket Pivot (거래량 2배)
                 elif today['Volume'] > vol_ma * 2 and today['Close'] > today['Open']:
                     oneil_entry, oneil_msg = today['Close'], "Pocket Pivot"
                 
@@ -440,8 +441,12 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                     'color': 'gray', 'active': False
                 })
             
+            # ═══════════════════════════════════════════════════
+            # 리스크 기준 동적 우선순위 결정 (낮을수록 우선)
+            # ═══════════════════════════════════════════════════
             strategies.sort(key=lambda x: (not x['active'], x['risk']))
         
+        # CSV 전략 사용 시 아이콘/색상 추가
         if use_csv_strategies:
             for strat in strategies:
                 if strat['type'] == 'pullback':
@@ -457,6 +462,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
                     strat['color'] = 'blueviolet' if strat['active'] else 'gray'
                     strat['desc'] = '오닐 패턴'
         
+        # 순위 표시
         col1, col2, col3 = st.columns(3)
         cols = [col1, col2, col3]
         rank_labels = ['1순위', '2순위', '3순위']
@@ -481,13 +487,33 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
 
     except Exception as e: st.error(f"전략 오류: {e}")
 
+    # 차트
     st.markdown("---")
-    st.markdown(f"#### 📉 차트 분석 (현재가: {row['close']:,.0f}원)")
+    # 등락률 계산 (전일 종가 대비)
+    change_pct = row.get('change_pct', 0)
+    if change_pct == 0:
+        # row에 없으면 계산 시도
+        prev_close = row.get('prev_close', 0)
+        if prev_close > 0:
+            change_pct = (row['close'] - prev_close) / prev_close * 100
+    
+    change_color = 'red' if change_pct >= 0 else 'blue'
+    change_sign = '+' if change_pct >= 0 else ''
+    st.markdown(f"#### 📉 차트 분석 (현재가: {row['close']:,.0f}원, <span style='color:{change_color}'>{change_sign}{change_pct:.2f}%</span>)", unsafe_allow_html=True)
     try:
+        # 차트 데이터 로드
         code_str = str(row['code']).zfill(6)
-        chart_df = fdr.DataReader(code_str, datetime.now()-timedelta(days=180), datetime.now())
+        chart_df = fdr.DataReader(code_str, datetime.now()-timedelta(days=180), datetime.now()) # use code_str
         
         if chart_df is not None and len(chart_df) > 0:
+            # 실시간 등락률 계산 (이전일 종가 대비)
+            if len(chart_df) >= 2 and change_pct == 0:
+                prev_close = chart_df['Close'].iloc[-2]
+                current_close = chart_df['Close'].iloc[-1]
+                change_pct = (current_close - prev_close) / prev_close * 100
+                change_color = 'red' if change_pct >= 0 else 'blue'
+                change_sign = '+' if change_pct >= 0 else ''
+            
             chart_df['MA20'] = chart_df['Close'].rolling(20).mean()
             chart_df['MA60'] = chart_df['Close'].rolling(60).mean()
             mid = chart_df['Close'].rolling(60).mean()
@@ -496,6 +522,7 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
             
             fig = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3], shared_xaxes=True, vertical_spacing=0.05)
             
+            # 메인 차트
             fig.add_trace(go.Candlestick(
                 x=chart_df.index, open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'],
                 name=f'주가 ({row["close"]:,.0f})', increasing_line_color='red', decreasing_line_color='blue'
@@ -508,28 +535,35 @@ def display_stock_report(row, sector_df=None, rs_3m=None, rs_6m=None):
             if 'stop' in row and pd.notna(row['stop']):
                  fig.add_hline(y=row['stop'], line_dash="dash", line_color="red", annotation_text="손절가", row=1, col=1)
 
+            # 거래량 차트
             colors = ['red' if c >= o else 'blue' for c, o in zip(chart_df['Close'], chart_df['Open'])]
             fig.add_trace(go.Bar(x=chart_df.index, y=chart_df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
             
+            # 마커 (불기둥 + 오닐)
             vol_ma = chart_df['Volume'].rolling(20).mean()
             for i in range(1, len(chart_df)):
                 d = chart_df.iloc[i]
                 prev = chart_df.iloc[i-1]
+                # 불기둥
                 if d['Volume'] > vol_ma.iloc[i] * 2 and d['Close'] > d['Open'] and d['Close'] > prev['Close'] * 1.05:
                      fig.add_annotation(x=chart_df.index[i], y=d['High'], text="🔥", showarrow=False, yshift=10, row=1, col=1)
             
+            # 오닐 패턴 마커 (오늘 날짜에만 표시)
+            # oneil_msg가 정의되어 있을 때만 표시 (CSV 사용 시는 없을 수 있음)
             try:
                 if 'oneil_msg' in dir() and oneil_msg:
                     fig.add_annotation(x=chart_df.index[-1], y=chart_df['High'].iloc[-1], text=f"💎{oneil_msg}", showarrow=True, arrowhead=1, row=1, col=1)
             except:
                 pass
 
+            # 레이아웃 개선: 범례 상단 이동
+            change_str = f"({change_sign}{change_pct:.2f}%)" if change_pct != 0 else ""
             fig.update_layout(
                 height=600, 
                 margin=dict(t=50, b=30, l=30, r=30), 
                 xaxis_rangeslider_visible=False,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                title=f"{row['name']} 차트 분석 (현재가: {row['close']:,.0f})"
+                title=f"{row['name']} 차트 분석 (현재가: {row['close']:,.0f} {change_str})"
             )
             st.plotly_chart(fig, use_container_width=True)
             
@@ -555,6 +589,7 @@ if mode == "📊 시장 스캐너":
         st.error("⚠️ 데이터 파일이 없습니다. [Github Actions] 탭에서 'Daily Stock Scanner'를 실행해주세요.")
         
     if df is not None:
+        # 섹터 분석 표시
         st.subheader("🧭 시장 주도 섹터 (Top-Down)")
         c1, c2 = st.columns(2)
         
@@ -581,12 +616,14 @@ if mode == "📊 시장 스캐너":
 
         st.markdown("---")
         
+        # 필터 및 리스트
         min_score = st.number_input("최소 점수 필터", min_value=0, max_value=100, value=65, step=5)
         filtered = df[df['total_score'] >= min_score].copy()
         
         st.subheader(f"🏆 고득점 종목 Top {len(filtered)}")
         
         display_cols = ['name', 'sector', 'close', 'total_score', 'setup', 'trend_score', 'pattern_score', 'volume_score', 'supply_score']
+        # 컬럼 존재 여부 확인 후 필터링
         display_cols = [c for c in display_cols if c in filtered.columns]
         
         show_df = filtered[display_cols].rename(columns={
@@ -596,6 +633,7 @@ if mode == "📊 시장 스캐너":
             'volume_score':'거래량', 'supply_score':'수급'
         })
         
+        # 소수점 제거 포맷팅
         format_dict = {
             '현재가': '{:,.0f}',
             '총점': '{:.0f}',
@@ -605,6 +643,7 @@ if mode == "📊 시장 스캐너":
             '수급': '{:.0f}'
         }
         
+        # 선택 기능
         event = st.dataframe(
             show_df.style.format(format_dict, na_rep="-").background_gradient(subset=['총점'], cmap='Blues'),
             use_container_width=True, 
@@ -624,9 +663,11 @@ elif mode == "🔍 종목 상세 진단":
     st.title("🔍 실시간 종목 상세 진단")
     st.info("📌 **총점 65점 이상만 매수대상** | 필수: 6개월 RS 70점 이상, 보조: 3개월 RS 65점 이상")
     
+    # 통합 검색창 (Selectbox with search)
     stock_list = get_krx_codes()
     stock_map = dict(zip(stock_list['Name'], stock_list['Code']))
     
+    # 검색 편의를 위해 '이름 (코드)' 형식으로 리스트 생성
     options = [f"{name} ({code})" for name, code in stock_map.items()]
     
     st.write("진단할 종목을 검색하거나 선택하세요.")
@@ -638,6 +679,7 @@ elif mode == "🔍 종목 상세 진단":
         
         if st.button("🚀 진단 시작"):
             with st.spinner(f"{name} ({code}) 데이터를 분석 중입니다..."):
+                # 수급 데이터 로딩 (스캔 데이터 확인 -> 없으면 실시간 크롤링)
                 inv_data = {'foreign_consecutive_buy': 0, 'inst_net_buy_5d': 0, 'foreign_net_buy_5d': 0}
                 
                 df_scan, sector_df, _ = load_data()
@@ -655,11 +697,13 @@ elif mode == "🔍 종목 상세 진단":
                         if inv_data['inst_net_buy_5d'] != 0 or inv_data['foreign_net_buy_5d'] != 0:
                             data_found = True
 
+                # 스캔 데이터에 없거나 수급이 0이면 실시간 크롤링 시도
                 if not data_found:
                     realtime_inv = get_investor_data_realtime(code)
                     if realtime_inv['inst_net_buy_5d'] != 0 or realtime_inv['foreign_net_buy_5d'] != 0:
                         inv_data = realtime_inv
                 
+                # 데이터 가져오기
                 df_stock = fdr.DataReader(code, datetime.now()-timedelta(days=400), datetime.now())
                 
                 if df_stock is not None and len(df_stock) > 100:
@@ -671,6 +715,7 @@ elif mode == "🔍 종목 상세 진단":
                         row = pd.Series(result)
                         row['name'] = name
                         row['code'] = code
+                        # 섹터 정보
                         row['sector'] = '기타' 
                         if df_scan is not None and not match.empty:
                             row['sector'] = match.iloc[0].get('sector', '기타')
@@ -694,12 +739,19 @@ elif mode == "🖼️ 차트 이미지 분석":
     
     if uploaded_file:
         st.image(uploaded_file, caption="업로드된 차트", use_column_width=True)
+        # 이미지 분석 로직 (Placeholder)
+        # from PIL import Image
+        # img = Image.open(uploaded_file)
+        # result = analyze_chart_image(img)
+        # ...
         st.warning("이미지 분석 기능은 현재 서버 설정 확인이 필요합니다 (Tesseract OCR 등).")
         
+        # 수동 종목 연동
         st.markdown("---")
         st.write("이미지 분석 대신 종목을 직접 선택하여 점수를 확인할 수 있습니다.")
         stock_list = get_krx_codes()
         opts = [f"{r['Name']} ({r['Code']})" for _, r in stock_list.iterrows()]
         sel = st.selectbox("종목 선택", opts)
         if st.button("분석 실행", key='img_btn'):
+            # (위 상세 진단 로직과 동일하게 연결 가능)
             pass
